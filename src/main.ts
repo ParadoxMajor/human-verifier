@@ -9,53 +9,71 @@ Devvit.configure({
 });
 
 export interface AppSettings {
-  trackVerificationInModNotes: boolean;
-  banOnFailedVerification: boolean;
-  spamFailedVerification: boolean;
-  notifyUserOnVerificationRequest: boolean;
-  actionOnPendingVerification: 'remove' | 'report' | 'nothing';
-  actionOnTimeoutVerification: 'remove' | 'report' | 'nothing';
-  notifyUserPostAndCommentRemovals: boolean;
-  pendingConfirmationTimeoutMinutes: number;
-  banOnConfirmationTimeout: boolean;
-  minHumanTimeToOpenConfirmForm: number;
-  minHumanTimeToConfirmHuman: number;
-  allowConfirmingWithoutNotification: boolean;
-  failVerificationIfChatGPTUsed: boolean;
+	trackVerificationInModNotes: boolean;
+	banOnFailedVerification: boolean;
+	spamFailedVerification: boolean;
+	notifyUserOnVerificationRequest: boolean;
+	actionOnPendingVerification: 'remove' | 'report' | 'nothing';
+	actionOnTimeoutVerification: 'remove' | 'report' | 'nothing';
+	notifyUserPostAndCommentRemovals: boolean;
+	pendingConfirmationTimeoutMinutes: number;
+	banOnConfirmationTimeout: boolean;
+	minHumanTimeToOpenConfirmForm: number;
+	minHumanTimeToConfirmHuman: number;
+	allowConfirmingWithoutNotification: boolean;
+	failVerificationIfChatGPTUsed: boolean;
+
+	// Repeat offender thresholds
+	repeatOffenderRemovalThreshold: number;
+	repeatOffenderBanThreshold: number;
+	repeatOffenderMuteThreshold: number;
+
+	//Flagged profile social media links
+	socialMedialFlaggedDomains: string;
 }
 
 /**
  * Fetch all app settings in one go
  */
 export async function getAppSettings(context: Context | TriggerContext): Promise<AppSettings> {
-  const trackVerificationInModNotes = await context.settings.get('trackVerificationInModNotes') as boolean;
-  const banOnFailedVerification = await context.settings.get('banOnFailedVerification') as boolean;
-  const spamFailedVerification = await context.settings.get('spamFailedVerification') as boolean;
-  const notifyUserOnVerificationRequest = await context.settings.get('notifyUserOnVerificationRequest') as boolean;
-  const actionOnPendingVerification = ((await context.settings.get('actionOnPendingVerification')) as string[])[0] as 'remove' | 'report' | 'nothing';
-  const actionOnTimeoutVerification = ((await context.settings.get('actionOnTimeoutVerification')) as string[])[0] as 'remove' | 'report' | 'nothing';
-  const notifyUserPostAndCommentRemovals = await context.settings.get('notifyUserPostAndCommentRemovals') as boolean;
-  const pendingConfirmationTimeoutMinutes = parseInt((await context.settings.get('pendingConfirmationTimeoutMinutes')) as string ?? '60', 10);
-  const banOnConfirmationTimeout = await context.settings.get('banOnConfirmationTimeout') as boolean;
-  const minHumanTimeToOpenConfirmForm = parseInt((await context.settings.get('minHumanTimeToOpenConfirmForm')) as string ?? '5', 10);
-  const minHumanTimeToConfirmHuman = parseInt((await context.settings.get('minHumanTimeToConfirmHuman')) as string ?? '15', 10);
-  const allowConfirmingWithoutNotification = await context.settings.get('allowConfirmingWithoutNotification') as boolean;
-  const failVerificationIfChatGPTUsed = await context.settings.get('failVerificationIfChatGPTUsed') as boolean;
+	const trackVerificationInModNotes = await context.settings.get('trackVerificationInModNotes') as boolean;
+	const banOnFailedVerification = await context.settings.get('banOnFailedVerification') as boolean;
+	const spamFailedVerification = await context.settings.get('spamFailedVerification') as boolean;
+	const notifyUserOnVerificationRequest = await context.settings.get('notifyUserOnVerificationRequest') as boolean;
+	const actionOnPendingVerification = ((await context.settings.get('actionOnPendingVerification')) as string[])[0] as 'remove' | 'report' | 'nothing';
+	const actionOnTimeoutVerification = ((await context.settings.get('actionOnTimeoutVerification')) as string[])[0] as 'remove' | 'report' | 'nothing';
+	const notifyUserPostAndCommentRemovals = await context.settings.get('notifyUserPostAndCommentRemovals') as boolean;
+	const pendingConfirmationTimeoutMinutes = parseInt((await context.settings.get('pendingConfirmationTimeoutMinutes')) as string ?? '60', 10);
+	const banOnConfirmationTimeout = await context.settings.get('banOnConfirmationTimeout') as boolean;
+	const minHumanTimeToOpenConfirmForm = parseInt((await context.settings.get('minHumanTimeToOpenConfirmForm')) as string ?? '5', 10);
+	const minHumanTimeToConfirmHuman = parseInt((await context.settings.get('minHumanTimeToConfirmHuman')) as string ?? '15', 10);
+	const allowConfirmingWithoutNotification = await context.settings.get('allowConfirmingWithoutNotification') as boolean;
+	const failVerificationIfChatGPTUsed = await context.settings.get('failVerificationIfChatGPTUsed') as boolean;
+
+	const repeatOffenderRemovalThreshold = parseInt((await context.settings.get('repeatOffenderRemovalThreshold')) as string ?? '3', 10);
+	const repeatOffenderBanThreshold = parseInt((await context.settings.get('repeatOffenderBanThreshold')) as string ?? '1', 10);
+	const repeatOffenderMuteThreshold = parseInt((await context.settings.get('repeatOffenderMuteThreshold')) as string ?? '2', 10);
+
+	const socialMedialFlaggedDomains = (await context.settings.get('socialMedialFlaggedDomains')) as string ?? '';
 
 	return {
-    trackVerificationInModNotes,
-    banOnFailedVerification,
-    spamFailedVerification,
-    notifyUserOnVerificationRequest,
-    actionOnPendingVerification,
-    actionOnTimeoutVerification,
-    notifyUserPostAndCommentRemovals,
-    pendingConfirmationTimeoutMinutes,
-    banOnConfirmationTimeout,
-    minHumanTimeToOpenConfirmForm,
-    minHumanTimeToConfirmHuman,
-    allowConfirmingWithoutNotification,
-    failVerificationIfChatGPTUsed,
+		trackVerificationInModNotes,
+		banOnFailedVerification,
+		spamFailedVerification,
+		notifyUserOnVerificationRequest,
+		actionOnPendingVerification,
+		actionOnTimeoutVerification,
+		notifyUserPostAndCommentRemovals,
+		pendingConfirmationTimeoutMinutes,
+		banOnConfirmationTimeout,
+		minHumanTimeToOpenConfirmForm,
+		minHumanTimeToConfirmHuman,
+		allowConfirmingWithoutNotification,
+		failVerificationIfChatGPTUsed,
+		repeatOffenderRemovalThreshold,
+		repeatOffenderBanThreshold,
+		repeatOffenderMuteThreshold,
+    	socialMedialFlaggedDomains,
 	};
 }
 
@@ -162,6 +180,34 @@ Devvit.addSettings(
 		label: "Fail Verification For ChatGPT/AI Usage",
 		defaultValue: false,
 		helpText: "Automatically fail human confirmation if user indicates they use ChatGPT or other AI tools to help compose posts/comments",
+	},
+  {
+		name: "repeatOffenderRemovalThreshold",
+		type: "number",
+		label: "Removals / Spam Threshold for Repeat Offender",
+		defaultValue: 3,
+		helpText: "Number of removal/spam actions before a user is marked as a repeat offender (⚠️) in User Breakdown."
+	},
+	{
+		name: "repeatOffenderBanThreshold",
+		type: "number",
+		label: "Bans Threshold for Repeat Offender",
+		defaultValue: 1,
+		helpText: "Number of bans before a user is marked as a repeat offender (⚠️) in User Breakdown."
+	},
+	{
+		name: "repeatOffenderMuteThreshold",
+		type: "number",
+		label: "Mutes Threshold for Repeat Offender",
+		defaultValue: 2,
+		helpText: "Number of mutes before a user is marked as a repeat offender (⚠️) in User Breakdown."
+	},
+	{
+		name: "socialMedialFlaggedDomains",
+		type: "string",
+		label: "Social Media Profile Link Domains to Flag",
+		defaultValue: '',
+		helpText: "Comma separated (like 'onlyfans,facebook'). Any domains in a profile's text or social media links to flag (⚠️) in User Breakdown."
 	},
 ]);
 

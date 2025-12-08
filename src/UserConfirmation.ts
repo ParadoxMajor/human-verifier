@@ -1,5 +1,5 @@
 import { Devvit , TriggerContext, Context } from "@devvit/public-api";
-import {getAppSettings} from "./main.js";
+import {AppSettings, getAppSettings} from "./main.js";
 
 export interface ConfirmationResults {
   username: string;
@@ -202,14 +202,15 @@ function checkTokenEntry(tokenEntered: string | undefined, tokenExpected: string
 export const confirmationDoneForm = Devvit.createForm(
   (data) => {
     let confirmationResults = parseConfirmationResultsWithDates(data.confirmationResults) as ConfirmationResults;
+    let appSettings = JSON.parse(data.appSettings);
     return {
       fields: [
         {
             name: "status",
             label: "Confirmation Status",
             type: "string",
-            defaultValue: confirmationResults.verificationStatus === 'verified' ? `u/${confirmationResults.username} Verified ✅` : `u/${confirmationResults.username} Verification Failed ❌`,
-            helpText: confirmationResults.verificationStatus === 'verified' ? "You should not be blocked by posting/commenting (except from other potential rule filters)" : "You are still blocked from posting/commenting. Please contact the moderators if you believe this is a mistake.",
+            defaultValue: getUserVerificationStatus(confirmationResults),
+            helpText: getUserVerificationHelpText(appSettings, confirmationResults),
             disabled: true,
         },
         //TODO allow retries in certain cases?
@@ -224,6 +225,49 @@ export const confirmationDoneForm = Devvit.createForm(
   }
 );
 
+function getUserVerificationStatus(confirmationResults: ConfirmationResults): string {
+  let status = '';
+  const verified = confirmationResults.verificationStatus === 'verified';
+  const failed = confirmationResults.verificationStatus === 'failed';
+  const timeout = confirmationResults.verificationStatus === 'timeout';
+  if(verified) {
+    status = `u/${confirmationResults.username} Verified 🟢`;
+  }
+  else if(failed) {
+    status = `u/${confirmationResults.username} Verification Failed 🔴`;
+  }
+  else if(timeout) {
+    status = `u/${confirmationResults.username} Verification Timed Out 🟠`;
+  }
+  else { 
+    //should never get here, but just in case
+    status = `u/${confirmationResults.username} Verification Unknown ⚪️`;
+  }
+  return status;
+}
+
+function getUserVerificationHelpText(appSettings: AppSettings, confirmationResults: ConfirmationResults): string {
+  let helpText = '';
+  const verified = confirmationResults.verificationStatus === 'verified';
+  const failed = confirmationResults.verificationStatus === 'failed';
+  const timeout = confirmationResults.verificationStatus === 'timeout';
+  if(verified) {
+    helpText = "You should not be blocked by posting/commenting (except from other potential rule filters)";
+  }
+  else if(failed) {
+    helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please contact the moderators if you believe this is a mistake.";
+  }
+  else if(timeout) {
+    if(appSettings.actionOnTimeoutVerification !== 'remove') {
+      helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please contact the moderators if you believe this is a mistake.";
+    }
+    else {
+      helpText = "You should not be blocked by posting/commenting (except from other potential rule filters)";
+    }
+  }
+  return helpText;
+}
+
 Devvit.addMenuItem({
   label: "Confirm Human",
   description:
@@ -237,14 +281,15 @@ Devvit.addMenuItem({
       return;
     }
 
+    const appSettings = await getAppSettings(context);
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
-    if(!(await getAppSettings(context)).allowConfirmingWithoutNotification && (!confirmationResults || !confirmationResults.notified)) {
-        console.log(`User u/${username} has not been notified for verification yet, and not alloqwed without mod request, so blocked`);
+    if(!appSettings.allowConfirmingWithoutNotification && (!confirmationResults || !confirmationResults.notified)) {
+        console.log(`User u/${username} has not been notified for verification yet, and not allowed without mod request, so blocked`);
         context.ui.showToast('You must wait to be notified by a moderator request before you can confirm you are human');
         return;
     }
     if(confirmationResults.verificationStatus === 'verified' || confirmationResults.verificationStatus === 'failed' || confirmationResults.verificationStatus === 'timeout') {
-      context.ui.showForm(confirmationDoneForm, {confirmationResults: JSON.stringify(confirmationResults)});
+      context.ui.showForm(confirmationDoneForm, {appSettings: JSON.stringify(appSettings), confirmationResults: JSON.stringify(confirmationResults)});
       return;
     }
     await startHumanConfirmationProcess(context, username, confirmationResults);
