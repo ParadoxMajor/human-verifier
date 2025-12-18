@@ -1,7 +1,7 @@
-import { Devvit , TriggerContext, Context } from "@devvit/public-api";
-import { ConfirmationResults, getConfirmationResults, setConfirmationResults, deleteConfirmationResults, parseConfirmationResultsWithDates } from "./UserConfirmation.js";
+import { Devvit , TriggerContext, Context, UserNoteLabel, FormField } from "@devvit/public-api";
+import { ConfirmationResults, getConfirmationResults, setConfirmationResults, deleteConfirmationResults, parseConfirmationResultsWithDates, getResultUsernames, clearAllResults } from "./UserConfirmation.js";
 import { AppSettings, getAppSettings } from "./main.js";
-import { getAuthorBreakdown } from "./RedditUtils.js"; 
+import { checkForModPerms, getAuthorBreakdown } from "./RedditUtils.js"; 
 
 export const verifyForm = Devvit.createForm(
   (data) => {
@@ -14,22 +14,21 @@ export const verifyForm = Devvit.createForm(
     return {
       fields: [
         {
+          name: "authorBreakdown",
+          type: "string",
+          label: "Breakdown",
+          disabled: true,
+          defaultValue: data.authorBreakdown ? data.authorBreakdown : "",
+        },
+        {
             name: "details",
-            label: data.authorBreakdown ? data.authorBreakdown : "u/" + confirmationResults.username,
+            label: "u/" + confirmationResults.username,
             type: "paragraph",
             lineHeight: descriptionLineHeight,
             defaultValue: description,
             helpText: "Note: Passing verification does not guarantee they are human",
             disabled: true,
         },
-        {
-            name: "verifyOverride",
-            label: "Mod Override",
-            type: "boolean",
-            helpText: "Select and click " + statusDetails.buttonLabel + " to choose an override option",
-            defaultValue: false,
-            required: false,
-        }
       ],
       title: statusDetails.detailedStatus,
       acceptLabel: statusDetails.buttonLabel,
@@ -37,21 +36,28 @@ export const verifyForm = Devvit.createForm(
     }
   },
   async ({ values }, context) => {
+    if(!await checkForModPerms(context, ['posts', 'access'])) {
+      console.log('u/' + context.username + ' has unsufficent mod perms');
+      context.ui.showToast('❌ You need posts and access perms');
+      return;
+    }
+    
     let username = context.postId ? (await context.reddit.getPostById(context.postId || '')).authorName
                                   : (await context.reddit.getCommentById(context.commentId || '')).authorName;
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
     const appSettings = await getAppSettings(context);
     const authorBreakdown = await getAuthorBreakdown(context, username);
-
-    //if mod override selected
-    if(values.verifyOverride) {
-        context.ui.showForm(modOverrideForm, {appSettings: JSON.stringify(appSettings), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown});
-        return;
-    }
     
     if(appSettings.notifyUserOnVerificationRequest) {
         //if we've reach here, action is to send a verification request
-        sendVerificationRequest(context, username, confirmationResults);
+        try {
+          sendVerificationRequest(context, username, confirmationResults);
+        }
+        catch(error) {
+          console.error('Failed to send verification request:', error);
+          context.ui.showToast('❌ Failed to send verification request');
+          return;
+        }
         confirmationResults.notified = true;
         confirmationResults.timeNotified = new Date();
     }
@@ -63,80 +69,6 @@ export const verifyForm = Devvit.createForm(
     confirmationResults.verificationStatus = 'pending';
     await setConfirmationResults(context, username, confirmationResults);
     context.ui.showToast({text: 'u/' + username + ' notified to confirm human', appearance: 'success'});
-  }
-);
-
-export const modOverrideForm = Devvit.createForm(
-  (data) => {
-    let confirmationResults = parseConfirmationResultsWithDates(data.confirmationResults) as ConfirmationResults;
-    let appSettings = JSON.parse(data.appSettings);
-    const statusDetails = getVerificationDetails(appSettings, confirmationResults.username || '', confirmationResults.verificationStatus || 'unverified');
-    let authorBreakdown = data.authorBreakdown;
-    if(authorBreakdown.includes('u/') && authorBreakdown.includes('| ')) {
-      authorBreakdown = authorBreakdown.substring(authorBreakdown.indexOf("|") + 1).trim();
-    }
-    return {
-      fields: [
-        {
-          name: "authorBreakdown",
-          type: "string",
-          label: "u/" + confirmationResults.username + " Breakdown",
-          disabled: true,
-          defaultValue: authorBreakdown ? authorBreakdown : "",
-        },
-        {
-            name: "verifyOverride",
-            label: "Verification Override",
-            type: "select",
-            options: getOverrideOptions(appSettings, confirmationResults.verificationStatus || 'unverified'),
-            helpText: "⚠️ Select manually set verification status (no notification sent to user) and click Override",
-            defaultValue: [],
-            required: false,
-        },
-        //TODO notify
-        // {
-        //     name: "notifyOfOverride",
-        //     label: "Notify User",
-        //     type: "boolean",
-        //     helpText: "Send u/" + confirmationResults.username + " a notification",
-        //     defaultValue: [true],
-        //     required: false,
-        // },
-      ],
-      title: statusDetails.detailedStatus + " - Mod Override",
-      acceptLabel: 'Override',
-      cancelLabel: "Cancel",
-    }
-  },
-  async ({ values }, context) => {
-    const username = values.status.substring(values.status.indexOf('u/') + 2, values.status.indexOf(" "));
-    let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
-
-    //if mod override selected
-    if(values.verifyOverride) {
-        if(values.verifyOverride[0] === 'mark_unverified') {
-            await deleteConfirmationResults(context, username || '');
-            //TODO notify
-            context.ui.showToast({text: 'u/' + username + ' Overriden To Unverified', appearance: 'success'});
-            return;
-        }
-        if(values.verifyOverride[0] === 'mark_verified') {
-            confirmationResults.verificationStatus = 'verified';
-            confirmationResults.modOverridenStatus = true;
-            await setConfirmationResults(context, username, confirmationResults);
-            //TODO notify
-            context.ui.showToast({text: 'u/' + username + ' Overriden To Verified', appearance: 'success'});
-            return;
-        }
-        if(values.verifyOverride[0] === 'mark_failed') {
-            confirmationResults.verificationStatus = 'failed';
-            confirmationResults.modOverridenStatus = true;
-            await setConfirmationResults(context, username, confirmationResults);
-            //TODO notify
-            context.ui.showToast({text: 'u/' + username + ' Overriden To Failed', appearance: 'success'});
-            return;
-        }
-    }
   }
 );
 
@@ -239,6 +171,22 @@ async function sendVerificationRequest(
 
 	// ---- Archive conversation after sending ----
 	await context.reddit.modMail.archiveConversation(conversationId);
+
+	// ---- Add mod note (if needed) ----
+  if((await getAppSettings(context)).trackVerificationInModNotes) {
+    const { subredditName, postId, commentId } = context;
+    const baseOptions: any = {
+      subreddit: subredditName,
+      user: username,
+      label: 'SPAM_WARNING',
+      note: 'Human verification request sent by u/' + context.username,
+    };
+    const redditId = postId ?? commentId;
+    if (redditId) {
+      baseOptions.redditId = redditId;
+    }
+    await context.reddit.addModNote(baseOptions);
+  }
 }
 
 Devvit.addMenuItem({
@@ -248,15 +196,17 @@ Devvit.addMenuItem({
   forUserType: "moderator",
   onPress: async (event, context) => {
     console.log(`Menu item 'Verify Human' pressed:\n${JSON.stringify(event)}`);
+
     const post = await context.reddit.getPostById(event.targetId || '');
     if(!post) {
       console.log('Post not found for verification.');
+      context.ui.showToast('❌ Check Failed: Post not found');
       return;
     }
-    console.log('user json? ' + JSON.stringify((await context.reddit.getUserById(post.authorId || ''))?.toJSON()));
     const username = (await context.reddit.getUserById(post.authorId || ''))?.username || '';
     if(!username) {
       console.log('Post author username not found for verification.');
+      context.ui.showToast('❌ Check Failed: Username not found');
       return;
     }
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
@@ -281,11 +231,13 @@ Devvit.addMenuItem({
     const comment = await context.reddit.getCommentById(event.targetId || '');
     if(!comment) {
       console.log('Comment not found for verification.');
+      context.ui.showToast('❌ Check Failed: Post not found');
       return;
     }
     const username = (await context.reddit.getUserById(comment.authorId || ''))?.username || '';
     if(!username) {
       console.log('Comment author username not found for verification.');
+      context.ui.showToast('❌ Check Failed: Username not found');
       return;
     }
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
@@ -299,6 +251,291 @@ Devvit.addMenuItem({
     context.ui.showForm(verifyForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
   },
 });
+
+Devvit.addMenuItem({
+  label: "Check Verification Statuses",
+  description: "Check all statuses and override results",
+  location: "subreddit",
+  forUserType: "moderator",
+  onPress: async (event, context) => {
+    console.log(`Menu item 'Check Human Status' pressed:\n${JSON.stringify(event)}`);
+    let usernames = await getResultUsernames(context);
+    const fullUsernameCount = usernames.length as number;
+    if(fullUsernameCount > 100) {
+      usernames = usernames.slice(-100);
+    }
+    let usernameOptions = new Array<{label:string, value:string}>;
+    for(const username of usernames) {
+      usernameOptions.push({label: username, value: username});
+    }
+    let verificationBreakdown = (usernameOptions.length === fullUsernameCount ? 'All ' + fullUsernameCount : usernameOptions.length + ' Most Recent') + ' Results\n\n';
+    for(const usernameOption of usernameOptions) {
+      const username = usernameOption.value;
+      const confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
+      if(confirmationResults.verificationStatus === 'verified') {
+        verificationBreakdown += '✅ ';
+      }
+      else if(confirmationResults.verificationStatus === 'failed') {
+        verificationBreakdown += '❌ ';
+      }
+      else if(confirmationResults.verificationStatus === 'timeout') {
+        verificationBreakdown += '💤 ';
+      }
+      else if(confirmationResults.verificationStatus === 'pending') {
+        verificationBreakdown += '💬 ';
+      }
+      else if(confirmationResults.verificationStatus === 'unverified') {
+        verificationBreakdown += '⚪️ ';
+      }
+      verificationBreakdown += 'u/' + username + '\n';
+    }
+    verificationBreakdown = verificationBreakdown.trim();
+    if(usernameOptions.length === 0) {
+      verificationBreakdown = 'No Results Yet'
+    }
+    const hasAllPerms = await checkForModPerms(context, ['all']);
+    const canOverride = await checkForModPerms(context, ['posts', 'access']);
+    context.ui.showForm(verifyAllForm, {fullUsernameCount, verificationBreakdown, usernameOptions: JSON.stringify(usernameOptions), hasAllPerms, canOverride});
+  },
+});
+
+export const verifyAllForm = Devvit.createForm(
+  (data) => {
+    const usernameOptions = JSON.parse(data.usernameOptions);
+    const countLabel = data.fullUsernameCount === usernameOptions.length ? 'Select from ' + data.fullUsernameCount + ' statuses': 
+                      'Select from the ' + usernameOptions.length + ' most recent statuses or type a username';
+    let fields = [] as FormField[];
+    fields.push(
+      {
+          name: "verificationBreakdown",
+          label: "Verification Breakdown",
+          type: "paragraph",
+          defaultValue: data.verificationBreakdown,
+          lineHeight: 6,
+          disabled: true,
+      }
+    );
+    if(data.canOverride) {
+      fields.push(
+        {
+            name: "usernameSelect",
+            label: "Select Username",
+            type: "select",
+            options: usernameOptions,
+            helpText: 'Select or type a username and press \'Override\' to manually set a status',
+            defaultValue: [],
+            disabled: false,
+        }
+      );
+    }
+    if(data.hasAllPerms) {
+      fields.push(
+        {
+            name: "deleteAllResultData",
+            label: "Delete All Result Data",
+            type: "boolean",
+            helpText: "Select and press 'Override'. ⚠️ This cannot be undone ⚠️",
+            defaultValue: false,
+        }
+      );
+    }
+    return {
+      fields: fields,
+      title: 'Check Verification Statuses',
+      acceptLabel: data.canOverride || data.hasAllPerms ? 'Override' : 'Close',
+      cancelLabel: 'Close',
+    }
+  },
+  async ({ values }, context) => {
+    const username =  values.usernameSelect?.length > 0 ? values.usernameSelect[0] : undefined;
+    if(username && !await checkForModPerms(context, ['posts', 'access'])) {
+      console.log('u/' + context.username + ' has unsufficent mod perms to override user status');
+      context.ui.showToast('❌ You need posts and access perms to override user status');
+      return;
+    }
+    if(values.deleteAllResultData && !await checkForModPerms(context, ['all'])) {
+      console.log('u/' + context.username + ' has unsufficent mod perms to delete all data');
+      context.ui.showToast('❌ You need all perms to delete all data');
+      return;
+    }
+    if(!username && !values.deleteAllResultData) {
+      console.log('Neither username nor delete all was selected');
+      context.ui.showToast('❌ No username or other override option selected');
+      return;
+    }
+
+    //if delete all override selected
+    if(values.deleteAllResultData) {
+      const usernames = await getResultUsernames(context);
+      context.ui.showForm(clearCacheForm, {resultCount: usernames.length});
+      return;
+    }
+    //otherwise overriding a selected or typed username
+    let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
+    if(!confirmationResults) {  
+      confirmationResults = {
+        username: username,
+      };
+      await setConfirmationResults(context, username, confirmationResults);
+    }
+    const authorBreakdown = await getAuthorBreakdown(context, username);
+    context.ui.showForm(modOverrideForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
+  }
+);
+
+export const modOverrideForm = Devvit.createForm(
+  (data) => {
+    let confirmationResults = parseConfirmationResultsWithDates(data.confirmationResults) as ConfirmationResults;
+    let appSettings = JSON.parse(data.appSettings);
+    const statusDetails = getVerificationDetails(appSettings, confirmationResults.username || '', confirmationResults.verificationStatus || 'unverified');
+    let authorBreakdown = data.authorBreakdown;
+    return {
+      fields: [
+        {
+          name: "authorBreakdown",
+          type: "string",
+          label: "Breakdown",
+          disabled: true,
+          defaultValue: authorBreakdown ? authorBreakdown : "",
+        },
+        {
+            name: "verifyOverride",
+            label: "Verification Override",
+            type: "select",
+            options: getOverrideOptions(appSettings, confirmationResults.verificationStatus || 'unverified'),
+            helpText: "⚠️ Select manually set verification status (no notification sent to user) and click Override",
+            defaultValue: [],
+            required: false,
+        },
+        //TODO notify
+        // {
+        //     name: "notifyOfOverride",
+        //     label: "Notify User",
+        //     type: "boolean",
+        //     helpText: "Send u/" + confirmationResults.username + " a notification",
+        //     defaultValue: [true],
+        //     required: false,
+        // },
+      ],
+      title: statusDetails.detailedStatus + " - Mod Override",
+      acceptLabel: 'Override',
+      cancelLabel: "Cancel",
+    }
+  },
+  async ({ values }, context) => {
+    if(!await checkForModPerms(context, ['posts', 'access'])) {
+      console.log('u/' + context.username + ' has unsufficent mod perms');
+      context.ui.showToast('❌ You need posts and access perms');
+      return;
+    }
+
+    const username = values.authorBreakdown.substring(values.authorBreakdown.indexOf('u/') + 2, values.authorBreakdown.indexOf(" "));
+    let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
+    const appSettings = await getAppSettings(context);
+    let modNoteLabel = undefined;
+    let modNote = undefined
+
+    //if mod override selected
+    if(values.verifyOverride) {
+        if(values.verifyOverride[0] === 'mark_unverified') {
+            confirmationResults.verificationStatus = 'unverified';
+            confirmationResults.modOverridenStatus = true;
+            await setConfirmationResults(context, username, confirmationResults);
+            //TODO notify with notifyOfOverride?
+            const outcome = 'u/' + username + ' Overriden To Unverified';
+            context.ui.showToast({text: outcome, appearance: 'success'});
+            modNote = outcome + ' by u/' + context.username;
+        }
+        //TODO delete entire results override?
+        else if(values.verifyOverride[0] === 'mark_verified') {
+            confirmationResults.verificationStatus = 'verified';
+            confirmationResults.modOverridenStatus = true;
+            await setConfirmationResults(context, username, confirmationResults);
+            //TODO notify with notifyOfOverride?
+            const outcome = 'u/' + username + ' Overriden To Verified';
+            context.ui.showToast({text: outcome, appearance: 'success'});
+            modNote = outcome + ' by u/' + context.username;
+        }
+        else if(values.verifyOverride[0] === 'mark_failed') {
+            confirmationResults.verificationStatus = 'failed';
+            confirmationResults.modOverridenStatus = true;
+            await setConfirmationResults(context, username, confirmationResults);
+            let banned = false;
+            if(appSettings.banOnFailedVerification) {
+                console.log(`User u/${confirmationResults.username} has been mod-overriden to fail verification. Banning user`);
+                await context.reddit.banUser({
+                    username: confirmationResults.username,
+                    subredditName: context.subredditName || '',
+                    reason: 'Mod-Overriden to Fail Human Verification by u/' + context.username,
+                    message: 'You have been banned for failing the human verification process. If you believe this is a mistake, please reply to this modmail.',
+                });
+                banned = true; 
+            }
+            //TODO notify with notifyOfOverride?
+            const outcome = 'u/' + username + ' Overriden To Failed' + (banned ? ' (User Banned)' : '');
+            context.ui.showToast({text: outcome, appearance: 'success'});
+            modNoteLabel = (banned ? 'BOT_BAN' : 'SPAM_WATCH') as UserNoteLabel
+            modNote = outcome + ' by u/' + context.username;
+        }
+
+        // ---- Add mod note (if needed) ----
+        if(appSettings.trackVerificationInModNotes && modNote) {
+          const { subredditName, postId, commentId } = context;
+          const baseOptions: any = {
+            subreddit: subredditName,
+            user: username,
+            note: modNote,
+          };
+          const redditId = postId ?? commentId;
+          if (redditId) {
+            baseOptions.redditId = redditId;
+          }
+          if(modNoteLabel) {
+            baseOptions.modNoteLabel = modNoteLabel;
+          }
+          await context.reddit.addModNote(baseOptions);
+        }
+    }
+  }
+);
+
+export const clearCacheForm = Devvit.createForm(
+  (data) => {
+    return {
+      fields: [
+        {
+          name: 'confirmation',
+          type: 'boolean',
+          label: '⚠️ Are you sure you want to clear all cache for ' + data.resultCount + ' result' + (data.resultCount !== 1 ? 's' : '') + '?',
+          helpText: 'This can\'t be undone',
+          defaultValue: false,
+        },
+      ],
+      title: 'Clear All Result Data?',
+      acceptLabel: '⚠️ Clear All ' + data.resultCount + ' Result' + (data.resultCount !== 1 ? 's' : '') + ' From Cache',
+      cancelLabel: 'Cancel',
+    }
+  },
+  async ({ values }, context) => {
+    const hasAllPerms = await checkForModPerms(context, ['all']);
+    if(hasAllPerms && values.confirmation) {
+      await clearAllResults(context);
+      const usernames = await getResultUsernames(context);
+      if(usernames.length === 0) {
+        context.ui.showToast({text: '✅ Cleared All Result Data', appearance: 'success'});
+      }
+      else {
+        context.ui.showToast({text: '❎ Failed to Clear Result Data'});
+      }
+    }
+    else if(!hasAllPerms) {
+      context.ui.showToast('You need \'all\' perms to clear all result data');
+    }
+    else {
+      context.ui.showToast({text: 'Confirmation not selected, so no data cleared'});
+    }
+  }
+);
 
 function getVerificationDetails(
   appSettings: AppSettings,

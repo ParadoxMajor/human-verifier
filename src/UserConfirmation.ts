@@ -1,4 +1,4 @@
-import { Devvit , TriggerContext, Context } from "@devvit/public-api";
+import { Devvit , TriggerContext, Context, UserNoteLabel } from "@devvit/public-api";
 import {AppSettings, getAppSettings} from "./main.js";
 
 export interface ConfirmationResults {
@@ -6,6 +6,7 @@ export interface ConfirmationResults {
   timeStarted?: Date;
   notified?: boolean;
   timeNotified?: Date;
+  timeToOpenInSeconds?: number;
   notificationModmailId?: string;
   human?: boolean;
   bot?: boolean;
@@ -49,6 +50,7 @@ export const confirmForm = Devvit.createForm(
               { label: "Yes", value: "yes" },
               { label: "No", value: "no" },
               { label: "Sometimes", value: "sometimes" },
+              { label: "Only For Language Translation", value: "tranlations" },
             ],
             defaultValue: [],
             required: true,
@@ -112,6 +114,7 @@ export const confirmForm = Devvit.createForm(
     }
     confirmationResults.tokenEntered = values.fakeTokenChallenge;
     confirmationResults.fakeTokenEntered = values.realTokenChallenge;
+    confirmationResults.understand = values.understand;
     //determine if they passed
     let passed = true;
     let failureReport = '----- ❎ u/' + confirmationResults.username + ' Failure Report -----';
@@ -121,16 +124,50 @@ export const confirmForm = Devvit.createForm(
     }
     failureReport += '\n';
     //let unsure = false;
-    //TODO check time to open form and time to complete form against min times in settings
+    
+    // Get thresholds from settings (ensure numbers)
+    const minOpen = Number(appSettings.minHumanTimeToOpenConfirmForm ?? 0);
+    const minConfirm = Number(appSettings.minHumanTimeToConfirmHuman ?? 0);
+
+    // Example checks:
+    if (confirmationResults.timeLapseSeconds < minConfirm) {
+      passed = false;
+      failureReport += `Completed too quickly: ${confirmationResults.timeLapseSeconds.toFixed(
+        1
+      )}s (min ${minConfirm}s)\n`;
+    }
+
+    // If you also track time from notification → form open, use a similar diff:
+    if (confirmationResults.timeStarted && confirmationResults.timeNotified) {
+      const openSeconds =
+        (confirmationResults.timeStarted.getTime() -
+          confirmationResults.timeNotified.getTime()) / 1000;
+
+      if (openSeconds < minOpen) {
+        passed = false;
+        failureReport += `Opened too quickly: ${openSeconds.toFixed(
+          1
+        )}s (min ${minOpen}s)\n`;
+      }
+    }
+
     if(!confirmationResults.human || confirmationResults.bot) {
         passed = false;
         failureReport += (!confirmationResults.human ? "Human Not Selected\n" : "")
                       + (confirmationResults.bot ? "Bot Selected\n" : "");
     }
-    if(appSettings.failVerificationIfChatGPTUsed && confirmationResults.chatgpt !== 'no') {
+
+    if(appSettings.chatGPTUsageAllowed === 'some' && confirmationResults.chatgpt === 'yes') {
         passed = false;
         failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
-        //TODO should this be considered unsure if !appSettings.failVerificationIfChatGPTUsed?
+    }
+    else if(appSettings.chatGPTUsageAllowed === 'translations' && confirmationResults.chatgpt === 'yes' || confirmationResults.chatgpt === 'sometimes') {
+        passed = false;
+        failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
+    }
+    else if(appSettings.chatGPTUsageAllowed === 'nothing' && confirmationResults.chatgpt !== 'no') {
+        passed = false;
+        failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
     }
     if(!checkUsernameEntry(confirmationResults.username, confirmationResults.usernameConfirm || '')) {
         passed = false;
@@ -160,16 +197,37 @@ export const confirmForm = Devvit.createForm(
     confirmationResults.verificationStatus = passed ? 'verified' : 'failed';
     await setConfirmationResults(context, confirmationResults.username, confirmationResults);
 
+    try {
+      const breakdown = generateConfirmationResultsBreakdown(confirmationResults);
+      if(breakdown && confirmationResults.notificationModmailId) {
+        if(confirmationResults.notificationModmailId) {
+          await context.reddit.modMail.reply({
+            body: breakdown,
+            conversationId: confirmationResults.notificationModmailId,
+            isInternal: true,
+          });
+        }
+        await context.reddit.modMail.archiveConversation(confirmationResults.notificationModmailId);
+      }
+    }
+    catch(error) {
+      console.error('Failed to generate results breakdown and add to modmail conversation:', error);
+    }
+
+    let modNoteLabel = undefined;
+    let modNote = undefined;
+
     if(passed) {
         console.log('✅ u/' + confirmationResults.username + ' verification successul!');
         context.ui.showToast({text: '✅ Human verification successful!', appearance: 'success'});
-        return;
+        modNote = 'u/' + confirmationResults.username + '✅ Human Verification Successfully';
     }
     else {
-        console.log('❎ u/' + confirmationResults.username + ' verification failed');
+        console.log('❌ u/' + confirmationResults.username + ' verification failed');
         failureReport = '\n\n' + failureReport + reportClose + '\n\n';
         if(!passed) console.log(failureReport);
         //show toast for failure?
+        modNote = 'u/' + confirmationResults.username + '❌ Human Verification Failed';
     }
     
     if(!passed && appSettings.banOnFailedVerification) {
@@ -180,7 +238,31 @@ export const confirmForm = Devvit.createForm(
             reason: 'Failed human verification, banned automatically',
             message: 'You have been banned for failing the human verification process. If you believe this is a mistake, please reply to this modmail.',
         });
-        return;
+        modNote += ' (User Banned)';
+        modNoteLabel = 'BOT_BAN' as UserNoteLabel;
+    }
+
+    // ---- Add mod note (if needed) ----
+    if(appSettings.trackVerificationInModNotes && modNote) {
+      const { subredditName, postId, commentId } = context;
+      const baseOptions: any = {
+        subreddit: subredditName,
+        user: confirmationResults.username,
+        note: modNote,
+      };
+      const redditId = postId ?? commentId;
+      if (redditId) {
+        baseOptions.redditId = redditId;
+      }
+      if(modNoteLabel) {
+        baseOptions.modNoteLabel = modNoteLabel;
+      }
+      try {
+        await context.reddit.addModNote(baseOptions);
+      }
+      catch(error) {
+        console.error('Failed to add verification mod note:', error);
+      }
     }
   }
 );
@@ -278,6 +360,7 @@ Devvit.addMenuItem({
     const username = (await context.reddit.getCurrentUser())?.username || '';
     if(!username) {
       console.log('Current username not found for verification.');
+      context.ui.showToast('You need to be logged in to confirm');
       return;
     }
 
@@ -297,46 +380,60 @@ Devvit.addMenuItem({
 });
 
 async function startHumanConfirmationProcess(context: Context, username: string, confirmationResults: ConfirmationResults): Promise<void> {
-    if(!confirmationResults) {  
-      confirmationResults = {
-        username: username,
-        timeStarted: new Date(),
-        tokenDisplayed: generateRandomToken(),
-      };
+  const appSettings = await getAppSettings(context);
+
+  if(!confirmationResults) {  
+    confirmationResults = {
+      username: username,
+      timeStarted: new Date(),
+      tokenDisplayed: generateRandomToken(),
+    };
+    await setConfirmationResults(context, username, confirmationResults);
+  }
+  
+  if(confirmationResults.verificationStatus === 'verified' || confirmationResults.verificationStatus === 'failed') {
+    context.ui.showForm(confirmationDoneForm , {confirmationResults: JSON.stringify(confirmationResults)});
+    return;
+  }
+  
+  if(confirmationResults.verificationStatus === 'pending') {
+    //reset start time and token
+    confirmationResults.timeStarted = new Date();
+    if(confirmationResults.timeNotified) confirmationResults.timeToOpenInSeconds = confirmationResults.timeStarted.getTime() - confirmationResults.timeNotified.getTime() / 1000;
+    confirmationResults.tokenDisplayed = generateRandomToken();
+    await setConfirmationResults(context, username, confirmationResults);
+  }
+  else {
+    //check if timed out since notified
+    const pendingTimeoutMinutes = appSettings.pendingConfirmationTimeoutMinutes;
+    if(pendingTimeoutMinutes > 0 && 
+        confirmationResults.timeNotified && 
+        (new Date().getTime() - confirmationResults.timeNotified.getTime()) / 1000 > pendingTimeoutMinutes * 60) {
+      confirmationResults.verificationStatus = 'timeout';
       await setConfirmationResults(context, username, confirmationResults);
-    }
-    if(confirmationResults.verificationStatus === 'verified' || confirmationResults.verificationStatus === 'failed') {
       context.ui.showForm(confirmationDoneForm , {confirmationResults: JSON.stringify(confirmationResults)});
       return;
     }
     
-    if(confirmationResults.verificationStatus === 'pending') {
-      //reset start time and token
+    confirmationResults.tokenDisplayed = generateRandomToken();
+    //otherwise set to pending to start verification
+    //confirmationResults.verificationStatus = 'pending'; only set to pending on request or else they may timeout just by looking and cancelling
+    if(!confirmationResults.timeStarted) {
       confirmationResults.timeStarted = new Date();
-      confirmationResults.tokenDisplayed = generateRandomToken();
-      await setConfirmationResults(context, username, confirmationResults);
     }
-    else {
-      //check if timed out since notified
-      const pendingTimeoutMinutes = (await getAppSettings(context)).pendingConfirmationTimeoutMinutes;
-      if(pendingTimeoutMinutes > 0 && 
-         confirmationResults.timeNotified && 
-         (new Date().getTime() - confirmationResults.timeNotified.getTime()) / 1000 > pendingTimeoutMinutes * 60) {
-        confirmationResults.verificationStatus = 'timeout';
-        await setConfirmationResults(context, username, confirmationResults);
-        context.ui.showForm(confirmationDoneForm , {confirmationResults: JSON.stringify(confirmationResults)});
-        return;
-      }
-      
-      confirmationResults.tokenDisplayed = generateRandomToken();
-      //otherwise set to pending to start verification
-      //confirmationResults.verificationStatus = 'pending'; only set to pending on request or else they may timeout just by looking and cancelling
-      if(!confirmationResults.timeStarted) {
-        confirmationResults.timeStarted = new Date();
-      }
-      await setConfirmationResults(context, username, confirmationResults);
-    }
-    context.ui.showForm(confirmForm , {confirmationResults: JSON.stringify(confirmationResults)});
+    await setConfirmationResults(context, username, confirmationResults);
+  }
+  context.ui.showForm(confirmForm , {confirmationResults: JSON.stringify(confirmationResults)});
+
+  // ---- Add mod note (if needed) ----
+  if(appSettings.trackVerificationInModNotes) {
+    const baseOptions: any = {
+      subreddit: context.subredditName,
+      user: confirmationResults.username,
+      note: 'u/' + confirmationResults.username + ' has started human confirmation',
+    };
+    await context.reddit.addModNote(baseOptions);
+  }
 }
 
 export async function getConfirmationResults(context: Context | TriggerContext , username: string): Promise<ConfirmationResults | boolean> {
@@ -349,21 +446,96 @@ export async function getConfirmationResults(context: Context | TriggerContext ,
 export async function setConfirmationResults(context: Context | TriggerContext , username: string, results: ConfirmationResults): Promise<void> {
   console.log('Setting u/' + username + '\'s confirmation results: ' + JSON.stringify(results));
   await context.redis.set('ConfirmationResults:' + username, JSON.stringify(results));
+  await addResultUsername(context, username);
 }
 export async function deleteConfirmationResults(context: Context | TriggerContext, username: string): Promise<void> {
   console.log('Deleting u/' + username + '\'s confirmation results');
   await context.redis.del('ConfirmationResults:' + username);
+  await removeResultUsername(context, username);
+}
+
+export async function getResultUsernames(context: Context | TriggerContext): Promise<Array<string>> {
+  const resultsStr = await context.redis.get('ResultUsernames');
+  if (resultsStr) {
+    return JSON.parse(resultsStr) as Array<string>;
+  }
+  return [];
+}
+export async function addResultUsername(context: Context | TriggerContext , username: string): Promise<void> {
+  const usernames = await getResultUsernames(context) as Array<string>;
+  if(!usernames.includes(username)) {
+    usernames.push(username);
+  }
+  await context.redis.set('ResultUsernames', JSON.stringify(usernames));
+}
+export async function removeResultUsername(context: Context | TriggerContext , username: string): Promise<void> {
+  const usernames = await getResultUsernames(context) as Array<string>;
+  const updated = usernames.filter(v => v !== username);
+  await context.redis.set('ResultUsernames', JSON.stringify(updated));
+}
+export async function clearAllResults(context: Context | TriggerContext): Promise<void> {
+  const usernames = await getResultUsernames(context) as Array<string>;
+  console.log('⚠️ Clearing all ' + usernames.length + ' confirmation results');
+  for(const username of usernames) {
+    await deleteConfirmationResults(context, username);
+  }
+  await context.redis.del('ResultUsernames');
+}
+
+export function generateConfirmationResultsBreakdown(confirmationResults:ConfirmationResults):string {
+  let breakdown = '';
+  if(!confirmationResults) {
+    return breakdown;
+  }
+
+  const {username, verificationStatus, notified, timeNotified, timeStarted, timeToOpenInSeconds,
+        human, bot, chatgpt, usernameConfirm, tokenDisplayed, tokenEntered, 
+        fakeTokenEntered, understand, timeCompleted, timeLapseSeconds, modOverridenStatus
+  } = confirmationResults;
+
+  if(verificationStatus === 'verified') {
+    breakdown += '**✅ u/' + username + ' passed human confirmation!**';
+  }
+  else if(verificationStatus === 'failed') {
+    breakdown += '❌ u/' + username + ' failed human confirmation';
+  }
+  else {
+    //should we ever get here? Only creating this for a modmail
+    breakdown += 'u/' + username + ' human confirmation: ' + verificationStatus;
+  }
+  breakdown += '\n\n';
+
+  breakdown += timeToOpenInSeconds ? '* Time To Start After Notifying: ' + timeToOpenInSeconds + ' seconds\n' : '';
+  breakdown += '* Selected Human: ' + human + '\n';
+  breakdown += '* Selected Bot: ' + bot + '\n';
+  breakdown += '* Selected Use ChatGPT/Other: ' + chatgpt + '\n';
+  breakdown += '* Selected Username: ' + usernameConfirm + '\n';
+  breakdown += '* Token Displayed: ' + (tokenDisplayed ? tokenDisplayed : '') + '\n';
+  breakdown += '* Token Entered:   ' + (tokenEntered ? tokenEntered : '') + '\n';
+  breakdown += '* Told To Leave Blank:   ' + (fakeTokenEntered ? fakeTokenEntered : '') + '\n';
+  breakdown += '* Confirmed Understanding:   ' + understand + '\n';
+  breakdown += timeLapseSeconds ? '* Time Taken On Form: ' + timeLapseSeconds + ' seconds\n' : '';
+  breakdown += modOverridenStatus ? '* Mod Overriden: ' + modOverridenStatus + '\n' : '';
+
+  breakdown += '\n*Note: Passing verification does not guarantee they are human*';
+
+  return breakdown;
 }
 
 export function parseConfirmationResultsWithDates(resultsStr: string): ConfirmationResults {
-    let confirmationResults = JSON.parse(resultsStr) as ConfirmationResults;
-    if (confirmationResults && confirmationResults.timeStarted && typeof confirmationResults.timeStarted === 'string') {
-        confirmationResults.timeStarted = new Date(confirmationResults.timeStarted);
-    }
-    if (confirmationResults && confirmationResults.timeCompleted && typeof confirmationResults.timeCompleted === 'string') {
-        confirmationResults.timeCompleted = new Date(confirmationResults.timeCompleted);
-    }
-    return confirmationResults;
+  let confirmationResults = JSON.parse(resultsStr) as ConfirmationResults;
+
+  if (confirmationResults?.timeNotified && typeof confirmationResults.timeNotified === 'string') {
+    confirmationResults.timeNotified = new Date(confirmationResults.timeNotified);
+  }
+  if (confirmationResults?.timeStarted && typeof confirmationResults.timeStarted === 'string') {
+    confirmationResults.timeStarted = new Date(confirmationResults.timeStarted);
+  }
+  if (confirmationResults?.timeCompleted && typeof confirmationResults.timeCompleted === 'string') {
+    confirmationResults.timeCompleted = new Date(confirmationResults.timeCompleted);
+  }
+
+  return confirmationResults;
 }
 
 function generateUsernameOptions(username: string): {label: string, value: string}[] {
@@ -371,7 +543,8 @@ function generateUsernameOptions(username: string): {label: string, value: strin
   options.push({label: 'u/' + username, value: 'user_' + username});
   //generate 5 random fake usernames
   for(let i = 0; i < 5; i++) {
-    options.push({label: 'u/' + generateRandomToken(), value: 'user_' + generateRandomToken()});
+    const randomToken = generateRandomToken(username.length, username.length, false);
+    options.push({label: 'u/' + randomToken, value: 'user_' + randomToken});
   }
   //shuffle the options
   for (let i = options.length - 1; i > 0; i--) {
@@ -381,10 +554,10 @@ function generateUsernameOptions(username: string): {label: string, value: strin
   return options;
 }
 
-function generateRandomToken(): string {
-  //generate random length between 3 and 5
-  const length = Math.floor(Math.random() * (5 - 3 + 1)) + 3;
-  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+function generateRandomToken(min = 3, max = 5, skipOAnd0s = true): string {
+  //generate random length between min and max
+  const length = Math.floor(Math.random() * (max - min + 1)) + min;
+  const characters = 'ABCDEFGHIJKLMN' + (skipOAnd0s ? '' : 'O') + 'PQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456789' + (skipOAnd0s ? '' : '0');
   let token = '';
   for (let i = 0; i < length; i++) {
     const randomIndex = Math.floor(Math.random() * characters.length);

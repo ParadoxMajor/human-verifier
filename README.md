@@ -8,13 +8,13 @@ Modmail verification requests are auto-archived for your peace of mind (unless t
 
 # Future Enhancements
 
+* Better human checks
 * Allows sub to optionally define rules for sending automated human verification requests
 * Allow mods to override ban/remove/report flags on a case-by-case basis
 * Post/Comment Guidance integration where possible. To start, you may have to define your own mod-only flair to use as a block flag and set up the Post/Comment Guidance rules for that user flair
 * Add more settings, such as considering approved users as already verified and always keeping the status mod note first, for easier reference
-* Display a user breakdown for mods when checking human status
 * Add a user-lookup form, so mods can override verification status if user deleted all their posts or comments
-* Better human checks
+* Allow failures on other subreddits to serve as a red flag
 
 # Isuses, Feedback, or Feature Requests?
 

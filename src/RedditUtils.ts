@@ -359,7 +359,7 @@ export async function getAuthorBreakdown(
             ?? [];
 	}
 
-	const maxNewUserAgeDays = 60;
+	const maxNewUserAgeDays = 60; //TODO make this a setting?
 	if (!detailed) {
 		let baseLine = `${repeatEmoji}u/${username} | Removals: ${removals} | Bans: ${bans} | Mutes: ${mutes}`;
 		let parenthesisInsert = undefined;

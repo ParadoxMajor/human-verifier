@@ -1,4 +1,4 @@
-import { Devvit , TriggerContext, Context } from "@devvit/public-api";
+import { Devvit , TriggerContext, Context, UserNoteLabel } from "@devvit/public-api";
 import { ConfirmationResults, getConfirmationResults, setConfirmationResults } from "./UserConfirmation.js";
 import { AppSettings, getAppSettings } from "./main.js";
 
@@ -50,6 +50,35 @@ async function handlePostOrComment(isPost: boolean, contentId: string, context: 
     const contentString = isPost ? 'Post' : 'Comment';
     const commentId = isPost ? '' : contentId.split("_")[1];
     const postId = isPost ? contentId.split("_")[1] : (await context.reddit.getCommentById(contentId)).postId.split('_')[1];
+
+    //check if timed out since notified
+    const pendingTimeoutMinutes = (await getAppSettings(context)).pendingConfirmationTimeoutMinutes;
+    if(pendingTimeoutMinutes > 0 && 
+        confirmationResults.timeNotified && 
+        (new Date().getTime() - confirmationResults.timeNotified.getTime()) / 1000 > pendingTimeoutMinutes * 60) {
+      confirmationResults.verificationStatus = 'timeout';
+      await setConfirmationResults(context, username, confirmationResults);
+      // ---- Add mod note (if needed) ----
+      if(appSettings.trackVerificationInModNotes && !appSettings.banOnConfirmationTimeout) {
+        const { subredditName, postId, commentId } = context;
+        const baseOptions: any = {
+          subreddit: subredditName,
+          user: confirmationResults.username,
+          note: 'u/' + username + ' timed out to confirm human verification',
+          modnoteLabel: 'SPAM_WARNING' as UserNoteLabel
+        };
+        const redditId = postId ?? commentId;
+        if (redditId) {
+          baseOptions.redditId = redditId;
+        }
+        try {
+          await context.reddit.addModNote(baseOptions);
+        }
+        catch(error) {
+          console.log('Failed to add mod note on verification timeout', error);
+        }
+      }
+    }
 
     const contentURL = isPost
         ? `https://www.reddit.com/r/${subredditName}/comments/${postId}`
@@ -129,15 +158,29 @@ async function handlePostOrComment(isPost: boolean, contentId: string, context: 
       }
 
       if(confirmationResults.verificationStatus === 'timeout' && appSettings.banOnConfirmationTimeout) {
-            console.log(`User u/${username} has timed out verification. Banning user on post submission.`);
-            await context.reddit.banUser({
-              username: content.authorId || '',
-              subredditName: subredditName || '',
-              reason: 'Failure to complete human verification in time, banned automatically',
-              context: contentId,
-              message: 'You have been banned for failing to complete the human verification process in time. If you believe this is a mistake, please reply to this modmail.',
-            });
-            return;
+          console.log(`User u/${username} has timed out verification. Banning user on post submission.`);
+          await context.reddit.banUser({
+            username: content.authorId || '',
+            subredditName: subredditName || '',
+            reason: 'Failure to complete human verification in time, banned automatically',
+            context: contentId,
+            message: 'You have been banned for failing to complete the human verification process in time. If you believe this is a mistake, please reply to this modmail.',
+          });
+          // ---- Add mod note (if needed) ----
+          if(appSettings.trackVerificationInModNotes && !appSettings.banOnConfirmationTimeout) {
+            const { subredditName, postId, commentId } = context;
+            const baseOptions: any = {
+              subreddit: subredditName,
+              user: confirmationResults.username,
+              note: 'u/' + username + ' timed out to confirm human verification (User Banned)',
+              modnoteLabel: 'BOT_BAN' as UserNoteLabel
+            };
+            const redditId = postId ?? commentId;
+            if (redditId) {
+              baseOptions.redditId = redditId;
+            }
+            await context.reddit.addModNote(baseOptions);
+          }
         }
     }
 }
