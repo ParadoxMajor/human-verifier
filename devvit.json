@@ -1,0 +1,9 @@
+{
+  "name": "human-verifier",
+    "blocks": {
+      "entry": "src/main.ts"
+  },
+  "marketingAssets": {
+    "icon": "assets/human-icon.png"
+  }
+}

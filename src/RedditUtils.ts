@@ -1,5 +1,5 @@
 
-import { Devvit, type FormField, Post, Comment, RedditAPIClient, SettingScope, SubredditData, SubredditInfo, ModeratorPermission, User, ModNote } from "@devvit/public-api";
+import { Devvit, type FormField, Post, Comment, RedditAPIClient, SettingScope, SubredditData, SubredditInfo, ModeratorPermission, User, ModNote, JobContext } from "@devvit/public-api";
 import { getAppSettings } from "./main.js";
 import { differenceInDays, differenceInHours, Duration, formatDistanceToNow, formatDuration, intervalToDuration } from "date-fns";
 
@@ -56,6 +56,28 @@ export function isRedditApp(context: Devvit.Context): boolean {
 }
 
 /**
+ * Compare app versions to see if a newer version is available.
+ * @param newVersion - Version string to compare against (e.g., "1.2.3")
+ * @param context - Devvit context to access app info
+ * @returns true if the current app version is lower than newVersion
+ */
+export async function isNewerVersionAvailable(context: Devvit.Context | JobContext, newVersion: string): Promise<boolean> {
+  // Get the current app version from the manifest
+  const currentVersion = context.appVersion; // e.g., "1.2.0"
+
+  const parseVersion = (v: string) => v.split('.').map(p => Number(p.replace(/\D.*$/, '')) || 0);
+
+  const [currMajor, currMinor, currPatch] = parseVersion(currentVersion);
+  const [newMajor, newMinor, newPatch] = parseVersion(newVersion);
+
+  if (newMajor > currMajor) return true;
+  if (newMajor === currMajor && newMinor > currMinor) return true;
+  if (newMajor === currMajor && newMinor === currMinor && newPatch > currPatch) return true;
+
+  return false; // current version is equal or newer
+}
+
+/**
  * Returns the correct Reddit domain for the detected platform.
  */
 export function formatRedditUrl(context: Devvit.Context, url: string): string {
@@ -76,9 +98,9 @@ export function formatRedditUrl(context: Devvit.Context, url: string): string {
 /**
  * Check mod permissions
  */
-export async function getModPerms(context: Devvit.Context) : Promise<ModeratorPermission[]> {
+export async function getModPerms(context: Devvit.Context, username?: string) : Promise<ModeratorPermission[]> {
     const subredditName = await context.reddit.getCurrentSubredditName() || '';
-    const username = await context.reddit.getCurrentUsername() || '';
+    username = username ? username : await context.reddit.getCurrentUsername() || '';
     const listing = context.reddit.getModerators({ subredditName });
     const mods = await listing.all(); // <-- convert Listing<User> to User[]
     const mod = mods.find(m => m.username.toLowerCase() === username.toLowerCase());

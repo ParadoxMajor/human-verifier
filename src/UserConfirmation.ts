@@ -1,5 +1,6 @@
 import { Devvit , TriggerContext, Context, UserNoteLabel } from "@devvit/public-api";
 import {AppSettings, getAppSettings} from "./main.js";
+import { getModPerms } from "./RedditUtils.js";
 
 export interface ConfirmationResults {
   username: string;
@@ -20,6 +21,7 @@ export interface ConfirmationResults {
   timeLapseSeconds?: number;
   verificationStatus?: 'verified' | 'pending' | 'timeout' | 'failed' | 'unverified';
   modOverridenStatus?: boolean;
+  screenReader?: boolean;
 }
 
 export const confirmForm = Devvit.createForm(
@@ -29,16 +31,23 @@ export const confirmForm = Devvit.createForm(
       fields: [
         {
             name: "human",
-            label: "I Am Human",
+            label: "I am human",
             type: "boolean",
             defaultValue: false,
             required: true,
         },
         {
             name: "bot",
-            label: "I Am a Bot",
+            label: "I am a bot",
             type: "boolean",
-            defaultValue: true,
+            defaultValue: false,
+            required: true,
+        },
+        {
+            name: "screenReader",
+            label: "I rely on a screen reader",
+            type: "boolean",
+            defaultValue: false,
             required: true,
         },
         {
@@ -53,6 +62,7 @@ export const confirmForm = Devvit.createForm(
               { label: "Only For Language Translation", value: "tranlations" },
             ],
             defaultValue: [],
+            editable: false,
             required: true,
         },
         {
@@ -62,34 +72,41 @@ export const confirmForm = Devvit.createForm(
             helpText: "Select your username from the list",
             options: generateUsernameOptions(confirmationResults.username),
             defaultValue: [],
+            editable: false,
             required: true,
         },
         {
             type: "group",
             name: "tokenChallengeGroup",
-            label: "Token Entry (⚠️ read instructions carefully)",
+            label: "⚠️ Token Entry (Read Instructions Carefully)",
             fields: [
-                {
-                    name: "realTokenChallenge",
-                    label: "Please enter this token: T-" + confirmationResults.tokenDisplayed + " (without the 'T-')", 
-                    type: "string",
-                    defaultValue: "",
-                    helpText: "Leave this field blank!",
-                },
                 {
                     name: "fakeTokenChallenge",
                     label: "Please enter this token: T-" + confirmationResults.tokenDisplayed + " (without the 'T-')",
                     type: "string",
                     defaultValue: "",
-                    helpText: "Enter the token here",
+                    helpText: "Enter the token here, leave the next one blank!",
                 },
+                {
+                    name: "realTokenChallenge",
+                    label: "Please enter this token: T-" + confirmationResults.tokenDisplayed + " (without the 'T-')", 
+                    type: "string",
+                    defaultValue: "",
+                    helpText: "Leave this token field blank!",
+                }
             ]
         },
         {
           name: "understand",
-          label: "⚠️ I understand that if I am found to be a bot, I may be banned.",
-          type: "boolean",
-          defaultValue: false,
+          label: "⚠️ Failures may result in a ban",
+          type: "select",
+          options: [
+            {label: 'I Don\'t Understand', value: 'no'},
+            {label: 'I Understand', value: 'yes'}
+          ],
+          helpText: 'If you fail and/or are banned, you can reply in modmail for help',
+          defaultValue: [],
+          editable: false,
           required: true,
         }
       ],
@@ -99,11 +116,13 @@ export const confirmForm = Devvit.createForm(
     }
   },
   async ({ values }, context) => {
+    console.log('Calculating results for u/' + context.username);
     let confirmationResults = await getConfirmationResults(context, context.username || '') as ConfirmationResults;
     confirmationResults.timeCompleted = new Date();
     confirmationResults.timeLapseSeconds = (confirmationResults.timeCompleted.getTime() - (confirmationResults.timeStarted ? confirmationResults.timeStarted.getTime() : confirmationResults.timeCompleted.getTime())) / 1000;
     confirmationResults.human = values.human;
     confirmationResults.bot = values.bot;
+    confirmationResults.screenReader = values.screenReader;
     confirmationResults.chatgpt = Array.isArray(values.chatgpt) ? values.chatgpt[0] : values.chatgpt;
 
     const appSettings = await getAppSettings(context);
@@ -114,7 +133,7 @@ export const confirmForm = Devvit.createForm(
     }
     confirmationResults.tokenEntered = values.fakeTokenChallenge;
     confirmationResults.fakeTokenEntered = values.realTokenChallenge;
-    confirmationResults.understand = values.understand;
+    confirmationResults.understand = values.understand[0] === 'yes';
     //determine if they passed
     let passed = true;
     let failureReport = '----- ❎ u/' + confirmationResults.username + ' Failure Report -----';
@@ -153,26 +172,28 @@ export const confirmForm = Devvit.createForm(
 
     if(!confirmationResults.human || confirmationResults.bot) {
         passed = false;
-        failureReport += (!confirmationResults.human ? "Human Not Selected\n" : "")
-                      + (confirmationResults.bot ? "Bot Selected\n" : "");
+        failureReport += !confirmationResults.human ? "Human Not Selected\n" : "";
+        failureReport += confirmationResults.bot ? "Bot Selected\n" : "";
     }
 
-    if(appSettings.chatGPTUsageAllowed === 'some' && confirmationResults.chatgpt === 'yes') {
-        passed = false;
-        failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
-    }
-    else if(appSettings.chatGPTUsageAllowed === 'translations' && confirmationResults.chatgpt === 'yes' || confirmationResults.chatgpt === 'sometimes') {
-        passed = false;
-        failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
-    }
-    else if(appSettings.chatGPTUsageAllowed === 'nothing' && confirmationResults.chatgpt !== 'no') {
-        passed = false;
-        failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
-    }
-    if(!checkUsernameEntry(confirmationResults.username, confirmationResults.usernameConfirm || '')) {
-        passed = false;
-        failureReport += "Actual Username:   \""+  confirmationResults.username + "\"\n";
-        failureReport += "Username Selected: \""+  confirmationResults.usernameConfirm + "\"\n";
+    if(!confirmationResults.screenReader) {
+      if(appSettings.chatGPTUsageAllowed === 'some' && confirmationResults.chatgpt === 'yes') {
+          passed = false;
+          failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
+      }
+      else if(appSettings.chatGPTUsageAllowed === 'translations' && confirmationResults.chatgpt === 'yes' || confirmationResults.chatgpt === 'sometimes') {
+          passed = false;
+          failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
+      }
+      else if(appSettings.chatGPTUsageAllowed === 'nothing' && confirmationResults.chatgpt !== 'no') {
+          passed = false;
+          failureReport += "ChatGPT/AI Usage: \""+  confirmationResults.chatgpt + "\"\n";
+      }
+      if(!checkUsernameEntry(confirmationResults.username, confirmationResults.usernameConfirm || '')) {
+          passed = false;
+          failureReport += "Actual Username:   \""+  confirmationResults.username + "\"\n";
+          failureReport += "Username Selected: \""+  confirmationResults.usernameConfirm + "\"\n";
+      }
     }
     if(!checkTokenEntry(confirmationResults.tokenEntered, confirmationResults.tokenDisplayed)) {
         passed = false;
@@ -183,11 +204,13 @@ export const confirmForm = Devvit.createForm(
         passed = false;
         failureReport += "Fake Token Entered:\t\""+  confirmationResults.fakeTokenEntered + "\"\n";
     }
-    if(!values.understand) {
-        //unsure = true;
-        //TODO should this be a failure?
-        passed = false;
-        failureReport += "Understand Confirmation Not Selected\n";
+    if(!confirmationResults.screenReader) {
+      if(!confirmationResults.understand) {
+          //unsure = true;
+          //TODO should this be a failure?
+          passed = false;
+          failureReport += "Understand Confirmation: No\n";
+      }
     }
     //if(unsure) {
         //TODO show advanced check form (to be implemented) - or something else?
@@ -195,10 +218,15 @@ export const confirmForm = Devvit.createForm(
     //}
 
     confirmationResults.verificationStatus = passed ? 'verified' : 'failed';
+    let modFailedOverride = false;
+    if(!passed && (await getModPerms(context)).length > 0) {
+      confirmationResults.verificationStatus = 'verified';
+      modFailedOverride = true;
+    }
     await setConfirmationResults(context, confirmationResults.username, confirmationResults);
 
     try {
-      const breakdown = generateConfirmationResultsBreakdown(confirmationResults);
+      const breakdown = generateConfirmationResultsBreakdown(confirmationResults, failureReport, minOpen, minConfirm, modFailedOverride);
       if(breakdown && confirmationResults.notificationModmailId) {
         if(confirmationResults.notificationModmailId) {
           await context.reddit.modMail.reply({
@@ -217,29 +245,34 @@ export const confirmForm = Devvit.createForm(
     let modNoteLabel = undefined;
     let modNote = undefined;
 
-    if(passed) {
-        console.log('✅ u/' + confirmationResults.username + ' verification successul!');
-        context.ui.showToast({text: '✅ Human verification successful!', appearance: 'success'});
-        modNote = 'u/' + confirmationResults.username + '✅ Human Verification Successfully';
+    if(passed && !modFailedOverride) {
+      console.log('✅ u/' + confirmationResults.username + ' verification successul!');
+      //context.ui.showToast({text: '✅ Human verification successful!', appearance: 'success'});
+      modNote = '✅ Human Verification Successful';
+    }
+    else if(modFailedOverride) {
+      console.log('❌ u/' + confirmationResults.username + ' verification failed, but is a mod, so ✅ successful');
+      //context.ui.showToast({text: '❌ Human verification failed (but mod, so ✅ so successul)', appearance: 'success'});
+      modNote = '❌ Human Verification Failed (But Mod, So ✅ Successful)';
     }
     else {
-        console.log('❌ u/' + confirmationResults.username + ' verification failed');
-        failureReport = '\n\n' + failureReport + reportClose + '\n\n';
-        if(!passed) console.log(failureReport);
-        //show toast for failure?
-        modNote = 'u/' + confirmationResults.username + '❌ Human Verification Failed';
+      console.log('❌ u/' + confirmationResults.username + ' verification failed');
+      failureReport = '\n\n' + failureReport + reportClose + '\n\n';
+      if(!passed) console.log(failureReport);
+      //context.ui.showToast({text: '❌ Human verification failed (reply to modmail for help)'});
+      modNote = '❌ Human Verification Failed';
     }
     
     if(!passed && appSettings.banOnFailedVerification) {
-        console.log(`User u/${confirmationResults.username} has failed verification. Banning user`);
-        await context.reddit.banUser({
-            username: confirmationResults.username,
-            subredditName: context.subredditName || '',
-            reason: 'Failed human verification, banned automatically',
-            message: 'You have been banned for failing the human verification process. If you believe this is a mistake, please reply to this modmail.',
-        });
-        modNote += ' (User Banned)';
-        modNoteLabel = 'BOT_BAN' as UserNoteLabel;
+      console.log(`User u/${confirmationResults.username} has failed verification. Banning user`);
+      await context.reddit.banUser({
+          username: confirmationResults.username,
+          subredditName: context.subredditName || '',
+          reason: 'Failed human verification, banned automatically',
+          message: 'You have been banned for failing the human verification process. If you believe this is a mistake, please reply to this modmail.',
+      });
+      modNote += ' (User Banned)';
+      modNoteLabel = 'BOT_BAN' as UserNoteLabel;
     }
 
     // ---- Add mod note (if needed) ----
@@ -264,6 +297,8 @@ export const confirmForm = Devvit.createForm(
         console.error('Failed to add verification mod note:', error);
       }
     }
+
+    context.ui.showForm(confirmationDoneForm, {appSettings: JSON.stringify(appSettings), confirmationResults: JSON.stringify(confirmationResults), modFailedOverride});
   }
 );
 
@@ -278,6 +313,8 @@ function checkTokenEntry(tokenEntered: string | undefined, tokenExpected: string
     //pass if tokens match, even if they are different cases or there's extra whitespace
     if(tokenEntered) tokenEntered = tokenEntered.toLowerCase().trim();
     if(tokenExpected) tokenExpected = tokenExpected.toLowerCase().trim();
+    //also allow any order of characters, in case of dyslexia
+    if(tokenEntered && tokenExpected) return tokenEntered.split('').sort().join('') === tokenExpected.split('').sort().join('');
     return tokenEntered === tokenExpected;
 }
 
@@ -285,63 +322,89 @@ export const confirmationDoneForm = Devvit.createForm(
   (data) => {
     let confirmationResults = parseConfirmationResultsWithDates(data.confirmationResults) as ConfirmationResults;
     let appSettings = JSON.parse(data.appSettings);
+    const modmailNeeded = confirmationResults.verificationStatus === 'failed' 
+                        || (confirmationResults.verificationStatus === 'timeout' 
+                            && appSettings.actionOnTimeoutVerification === 'remove');
+    const notificationModmailId = confirmationResults.notificationModmailId;
+    const acceptLabel = modmailNeeded ? (notificationModmailId ? 'Need Mod Help' : 'Prepare Modmail') : 'Done';
     return {
       fields: [
         {
             name: "status",
             label: "Confirmation Status",
             type: "string",
-            defaultValue: getUserVerificationStatus(confirmationResults),
-            helpText: getUserVerificationHelpText(appSettings, confirmationResults),
+            defaultValue: getUserVerificationStatus(confirmationResults, data.modFailedOverride as boolean),
+            helpText: getUserVerificationHelpText(appSettings, confirmationResults, acceptLabel, data.modFailedOverride),
             disabled: true,
         },
         //TODO allow retries in certain cases?
       ],
       title: "Human Confirmation Result",
-      acceptLabel: "OK",
+      acceptLabel: acceptLabel,
       cancelLabel: "Close",
     }
   },
   async ({ values }, context) => {
-    //Do nothing, I guess?
+    let confirmationResults = await getConfirmationResults(context, context.username || '') as ConfirmationResults;
+    const appSettings = await getAppSettings(context);
+    const modmailNeeded = confirmationResults.verificationStatus === 'failed' 
+                        || (confirmationResults.verificationStatus === 'timeout' 
+                            && appSettings.actionOnTimeoutVerification === 'remove');
+    const notificationModmailId = confirmationResults.notificationModmailId;
+    const needModHelp = modmailNeeded && notificationModmailId;
+    const prepareModmail = modmailNeeded && !notificationModmailId;
+
+    if(needModHelp) {
+      await context.reddit.modMail.reply({
+        body: 'Mod help requested. u/' + confirmationResults.username + ', please reply with details here',
+        conversationId: notificationModmailId,
+      });
+    }
+    else if(prepareModmail) {
+      context.ui.navigateTo('https://www.reddit.com/message/compose?to=%2Fr%2F' + context.subredditName + '&subject=Human%20Verification%20failed');
+    }
   }
 );
 
-function getUserVerificationStatus(confirmationResults: ConfirmationResults): string {
+function getUserVerificationStatus(confirmationResults: ConfirmationResults, modFailedOverride = false): string {
   let status = '';
   const verified = confirmationResults.verificationStatus === 'verified';
   const failed = confirmationResults.verificationStatus === 'failed';
   const timeout = confirmationResults.verificationStatus === 'timeout';
   if(verified) {
-    status = `u/${confirmationResults.username} Verified 🟢`;
+    status = `✅ u/${confirmationResults.username} Verified`;
+  }
+  else if(failed && modFailedOverride) {
+    status = `❌ u/${confirmationResults.username} Verification Failed (but mod, so ✅ so successul)`;
+      //context.ui.showToast({text: '❌ Human verification failed (but mod, so ✅ so successul)', appearance: 'success'});
   }
   else if(failed) {
-    status = `u/${confirmationResults.username} Verification Failed 🔴`;
+    status = `❌ u/${confirmationResults.username} Verification Failed`;
   }
   else if(timeout) {
-    status = `u/${confirmationResults.username} Verification Timed Out 🟠`;
+    status = `💤 u/${confirmationResults.username} Verification Timed Out`;
   }
   else { 
     //should never get here, but just in case
-    status = `u/${confirmationResults.username} Verification Unknown ⚪️`;
+    status = `⚪️ u/${confirmationResults.username} Verification Unknown`;
   }
   return status;
 }
 
-function getUserVerificationHelpText(appSettings: AppSettings, confirmationResults: ConfirmationResults): string {
+function getUserVerificationHelpText(appSettings: AppSettings, confirmationResults: ConfirmationResults, acceptLabel: string, modFailedOverride = false): string {
   let helpText = '';
   const verified = confirmationResults.verificationStatus === 'verified';
   const failed = confirmationResults.verificationStatus === 'failed';
   const timeout = confirmationResults.verificationStatus === 'timeout';
-  if(verified) {
+  if(verified || modFailedOverride) {
     helpText = "You should not be blocked by posting/commenting (except from other potential rule filters)";
   }
   else if(failed) {
-    helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please contact the moderators if you believe this is a mistake.";
+    helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please press '" + acceptLabel + "' if you believe this is a mistake.";
   }
   else if(timeout) {
     if(appSettings.actionOnTimeoutVerification !== 'remove') {
-      helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please contact the moderators if you believe this is a mistake.";
+      helpText = "You are " + (appSettings.actionOnPendingVerification !== 'remove' ? "" : "still ") + "blocked from posting/commenting. Please press '" + acceptLabel + "' if you believe this is a mistake.";
     }
     else {
       helpText = "You should not be blocked by posting/commenting (except from other potential rule filters)";
@@ -356,7 +419,7 @@ Devvit.addMenuItem({
     "Prevent potential blocks from posting and commenting",
   location: "subreddit",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Verify Human' pressed:\n${JSON.stringify(event)}`);
+    console.log(`Menu item 'Confirm Human' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
     const username = (await context.reddit.getCurrentUser())?.username || '';
     if(!username) {
       console.log('Current username not found for verification.');
@@ -399,7 +462,7 @@ async function startHumanConfirmationProcess(context: Context, username: string,
   if(confirmationResults.verificationStatus === 'pending') {
     //reset start time and token
     confirmationResults.timeStarted = new Date();
-    if(confirmationResults.timeNotified) confirmationResults.timeToOpenInSeconds = confirmationResults.timeStarted.getTime() - confirmationResults.timeNotified.getTime() / 1000;
+    if(confirmationResults.timeNotified) confirmationResults.timeToOpenInSeconds = (confirmationResults.timeStarted.getTime() - confirmationResults.timeNotified.getTime()) / 1000;
     confirmationResults.tokenDisplayed = generateRandomToken();
     await setConfirmationResults(context, username, confirmationResults);
   }
@@ -482,14 +545,14 @@ export async function clearAllResults(context: Context | TriggerContext): Promis
   await context.redis.del('ResultUsernames');
 }
 
-export function generateConfirmationResultsBreakdown(confirmationResults:ConfirmationResults):string {
+export function generateConfirmationResultsBreakdown(confirmationResults:ConfirmationResults, failureReport:string, minOpen=0, minConfirm=0, modFailedOverride = false):string {
   let breakdown = '';
   if(!confirmationResults) {
     return breakdown;
   }
 
   const {username, verificationStatus, notified, timeNotified, timeStarted, timeToOpenInSeconds,
-        human, bot, chatgpt, usernameConfirm, tokenDisplayed, tokenEntered, 
+        screenReader: screenReader, human: human, bot, chatgpt, usernameConfirm, tokenDisplayed, tokenEntered, 
         fakeTokenEntered, understand, timeCompleted, timeLapseSeconds, modOverridenStatus
   } = confirmationResults;
 
@@ -497,7 +560,8 @@ export function generateConfirmationResultsBreakdown(confirmationResults:Confirm
     breakdown += '**✅ u/' + username + ' passed human confirmation!**';
   }
   else if(verificationStatus === 'failed') {
-    breakdown += '❌ u/' + username + ' failed human confirmation';
+    breakdown += '❌ u/' + username + ' failed human confirmation\n\n';
+    breakdown += failureReport;
   }
   else {
     //should we ever get here? Only creating this for a modmail
@@ -505,19 +569,24 @@ export function generateConfirmationResultsBreakdown(confirmationResults:Confirm
   }
   breakdown += '\n\n';
 
-  breakdown += timeToOpenInSeconds ? '* Time To Start After Notifying: ' + timeToOpenInSeconds + ' seconds\n' : '';
+  breakdown += timeToOpenInSeconds ? '* Time To Start After Notifying: ' + timeToOpenInSeconds + 's' + (minOpen > 0 ? ' (' + minOpen + 's min)' : '') + '\n' : '';
   breakdown += '* Selected Human: ' + human + '\n';
   breakdown += '* Selected Bot: ' + bot + '\n';
+  breakdown += '* Selected Screen Reader: ' + screenReader + (screenReader ? '*' : '') + '\n';
   breakdown += '* Selected Use ChatGPT/Other: ' + chatgpt + '\n';
   breakdown += '* Selected Username: ' + usernameConfirm + '\n';
   breakdown += '* Token Displayed: ' + (tokenDisplayed ? tokenDisplayed : '') + '\n';
   breakdown += '* Token Entered:   ' + (tokenEntered ? tokenEntered : '') + '\n';
   breakdown += '* Told To Leave Blank:   ' + (fakeTokenEntered ? fakeTokenEntered : '') + '\n';
   breakdown += '* Confirmed Understanding:   ' + understand + '\n';
-  breakdown += timeLapseSeconds ? '* Time Taken On Form: ' + timeLapseSeconds + ' seconds\n' : '';
+  breakdown += timeLapseSeconds ? '* Time Taken On Form: ' + timeLapseSeconds + 's' + (minConfirm > 0 ? ' (' + minConfirm + 's min)' : '') + '\n' : '';
   breakdown += modOverridenStatus ? '* Mod Overriden: ' + modOverridenStatus + '\n' : '';
 
-  breakdown += '\n*Note: Passing verification does not guarantee they are human*';
+  breakdown += screenReader && !human ? '\n\*Screen reader used, so skipped checks with poor accessibility. If user has useful feedback for the form, please send modmail to r/MajorParadoxApps*\n\n' : '';
+  breakdown += tokenDisplayed?.toLowerCase() !== tokenEntered?.toLowerCase() ? '\n\*Token wasn\'t was considered a mismatch in case of dyslexia*\n\n' : '';
+  breakdown += verificationStatus === 'verified' ? '\n*Note: Passing verification does not guarantee they are human. They could be a very smart bot!*\n\n'
+                                    : '*Failing verification does not guarantee they are a bot. They could have had trouble or messed up*\n\n';
+  breakdown += modFailedOverride ? '*User failed but is a mod, so counted as a success*\n\n' : '';
 
   return breakdown;
 }

@@ -1,7 +1,7 @@
 import { Devvit , TriggerContext, Context, UserNoteLabel, FormField } from "@devvit/public-api";
 import { ConfirmationResults, getConfirmationResults, setConfirmationResults, deleteConfirmationResults, parseConfirmationResultsWithDates, getResultUsernames, clearAllResults } from "./UserConfirmation.js";
 import { AppSettings, getAppSettings } from "./main.js";
-import { checkForModPerms, getAuthorBreakdown } from "./RedditUtils.js"; 
+import { checkForModPerms, getAuthorBreakdown, getModPerms } from "./RedditUtils.js"; 
 
 export const verifyForm = Devvit.createForm(
   (data) => {
@@ -46,7 +46,6 @@ export const verifyForm = Devvit.createForm(
                                   : (await context.reddit.getCommentById(context.commentId || '')).authorName;
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
     const appSettings = await getAppSettings(context);
-    const authorBreakdown = await getAuthorBreakdown(context, username);
     
     if(appSettings.notifyUserOnVerificationRequest) {
         //if we've reach here, action is to send a verification request
@@ -77,6 +76,15 @@ async function sendVerificationRequest(
 	username: string,
 	confirmationResults: ConfirmationResults
 ): Promise<void> {
+  if(!username) {
+	  console.log(`Unable to send verification request to u/${username}`);
+    try {
+      (context as Context).ui.showToast('User is deleted, suspended, or shadowbanned, so unable to send request');
+    }
+    catch(error) {}
+    return;
+  }
+
 	console.log(`Sending verification request to u/${username}`);
 
 	const subredditName = context.subredditName || '';
@@ -100,7 +108,7 @@ async function sendVerificationRequest(
 		case 'unverified':
 			modmailSubject = `Verification requested`;
 			modmailMessage =
-				`Hi,\n\n` +
+				`Hi u/${username},\n\n` +
 				`You’re not in trouble, but your account was flagged by r/${subredditName} for review.\n\n` +
 				`To continue posting and commenting, please complete a quick verification.\n\n` +
 				instructions +
@@ -195,7 +203,7 @@ Devvit.addMenuItem({
   location: "post",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Verify Human' pressed:\n${JSON.stringify(event)}`);
+    console.log(`Menu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
 
     const post = await context.reddit.getPostById(event.targetId || '');
     if(!post) {
@@ -216,7 +224,9 @@ Devvit.addMenuItem({
       };
       await setConfirmationResults(context, username, confirmationResults);
     }
-    const authorBreakdown = await getAuthorBreakdown(context, username);
+    let authorBreakdown = await getAuthorBreakdown(context, username);
+    //remove username from breakdown, since it's already shown
+    authorBreakdown = authorBreakdown.replace(/^[^|]+\s\|\s/, '');
     context.ui.showForm(verifyForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
   },
 });
@@ -227,7 +237,7 @@ Devvit.addMenuItem({
   location: "comment",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Verify Human' pressed:\n${JSON.stringify(event)}`);
+    console.log(`Menu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
     const comment = await context.reddit.getCommentById(event.targetId || '');
     if(!comment) {
       console.log('Comment not found for verification.');
@@ -247,7 +257,9 @@ Devvit.addMenuItem({
       };
       await setConfirmationResults(context, username, confirmationResults);
     }
-    const authorBreakdown = await getAuthorBreakdown(context, username);
+    let authorBreakdown = await getAuthorBreakdown(context, username);
+    //remove username from breakdown, since it's already shown
+    authorBreakdown = authorBreakdown.replace(/^[^|]+\s\|\s/, '');
     context.ui.showForm(verifyForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
   },
 });
@@ -258,7 +270,7 @@ Devvit.addMenuItem({
   location: "subreddit",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Check Human Status' pressed:\n${JSON.stringify(event)}`);
+    console.log(`Menu item 'Check Verification Statuses' pressed by u${context.username}:\n${JSON.stringify(event)}`);
     let usernames = await getResultUsernames(context);
     const fullUsernameCount = usernames.length as number;
     if(fullUsernameCount > 100) {
@@ -272,6 +284,7 @@ Devvit.addMenuItem({
     for(const usernameOption of usernameOptions) {
       const username = usernameOption.value;
       const confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
+      let timelapse = undefined;
       if(confirmationResults.verificationStatus === 'verified') {
         verificationBreakdown += '✅ ';
       }
@@ -283,19 +296,22 @@ Devvit.addMenuItem({
       }
       else if(confirmationResults.verificationStatus === 'pending') {
         verificationBreakdown += '💬 ';
+        timelapse = confirmationResults.timeLapseSeconds;
       }
       else if(confirmationResults.verificationStatus === 'unverified') {
         verificationBreakdown += '⚪️ ';
       }
-      verificationBreakdown += 'u/' + username + '\n';
+      verificationBreakdown += 'u/' + username + ' (' + confirmationResults.verificationStatus + (timelapse ? ' - ' + timelapse + 's' : '') + ')' + '\n';
     }
     verificationBreakdown = verificationBreakdown.trim();
     if(usernameOptions.length === 0) {
       verificationBreakdown = 'No Results Yet'
     }
-    const hasAllPerms = await checkForModPerms(context, ['all']);
+
+    const showDeleteAllToggle = await canDeleteAllCache(context, await getAppSettings(context));
+
     const canOverride = await checkForModPerms(context, ['posts', 'access']);
-    context.ui.showForm(verifyAllForm, {fullUsernameCount, verificationBreakdown, usernameOptions: JSON.stringify(usernameOptions), hasAllPerms, canOverride});
+    context.ui.showForm(verifyAllForm, {fullUsernameCount, verificationBreakdown, usernameOptions: JSON.stringify(usernameOptions), showDeleteAllToggle, canOverride});
   },
 });
 
@@ -328,7 +344,7 @@ export const verifyAllForm = Devvit.createForm(
         }
       );
     }
-    if(data.hasAllPerms) {
+    if(data.showDeleteAllToggle) {
       fields.push(
         {
             name: "deleteAllResultData",
@@ -378,7 +394,10 @@ export const verifyAllForm = Devvit.createForm(
       };
       await setConfirmationResults(context, username, confirmationResults);
     }
-    const authorBreakdown = await getAuthorBreakdown(context, username);
+    let authorBreakdown = await getAuthorBreakdown(context, username);
+    //remove username from breakdown, since it's already shown
+    //actually, need it so the overrides know the username
+    //authorBreakdown = authorBreakdown.replace(/^[^|]+\s\|\s/, '');
     context.ui.showForm(modOverrideForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
   }
 );
@@ -394,7 +413,7 @@ export const modOverrideForm = Devvit.createForm(
         {
           name: "authorBreakdown",
           type: "string",
-          label: "Breakdown",
+          label: "u/" +  confirmationResults.username+ " Breakdown",
           disabled: true,
           defaultValue: authorBreakdown ? authorBreakdown : "",
         },
@@ -429,7 +448,8 @@ export const modOverrideForm = Devvit.createForm(
       return;
     }
 
-    const username = values.authorBreakdown.substring(values.authorBreakdown.indexOf('u/') + 2, values.authorBreakdown.indexOf(" "));
+    const username = values.authorBreakdown.match(/u\/([A-Za-z0-9_-]+)/)?.[1] ?? null;
+
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
     const appSettings = await getAppSettings(context);
     let modNoteLabel = undefined;
@@ -442,7 +462,7 @@ export const modOverrideForm = Devvit.createForm(
             confirmationResults.modOverridenStatus = true;
             await setConfirmationResults(context, username, confirmationResults);
             //TODO notify with notifyOfOverride?
-            const outcome = 'u/' + username + ' Overriden To Unverified';
+            const outcome = 'Overriden To Unverified';
             context.ui.showToast({text: outcome, appearance: 'success'});
             modNote = outcome + ' by u/' + context.username;
         }
@@ -452,11 +472,15 @@ export const modOverrideForm = Devvit.createForm(
             confirmationResults.modOverridenStatus = true;
             await setConfirmationResults(context, username, confirmationResults);
             //TODO notify with notifyOfOverride?
-            const outcome = 'u/' + username + ' Overriden To Verified';
+            const outcome = 'Overriden To Verified';
             context.ui.showToast({text: outcome, appearance: 'success'});
             modNote = outcome + ' by u/' + context.username;
         }
         else if(values.verifyOverride[0] === 'mark_failed') {
+            if((await getModPerms(context, username)).length > 0) {
+              context.ui.showToast({text: 'u/' + username + ' is a mod, so skipping failure override'});
+              return;
+            }
             confirmationResults.verificationStatus = 'failed';
             confirmationResults.modOverridenStatus = true;
             await setConfirmationResults(context, username, confirmationResults);
@@ -472,7 +496,7 @@ export const modOverrideForm = Devvit.createForm(
                 banned = true; 
             }
             //TODO notify with notifyOfOverride?
-            const outcome = 'u/' + username + ' Overriden To Failed' + (banned ? ' (User Banned)' : '');
+            const outcome = 'Overriden To Failed' + (banned ? ' (User Banned)' : '');
             context.ui.showToast({text: outcome, appearance: 'success'});
             modNoteLabel = (banned ? 'BOT_BAN' : 'SPAM_WATCH') as UserNoteLabel
             modNote = outcome + ' by u/' + context.username;
@@ -517,8 +541,8 @@ export const clearCacheForm = Devvit.createForm(
     }
   },
   async ({ values }, context) => {
-    const hasAllPerms = await checkForModPerms(context, ['all']);
-    if(hasAllPerms && values.confirmation) {
+    const canDelete = await canDeleteAllCache(context, await getAppSettings(context));
+    if(canDelete && values.confirmation) {
       await clearAllResults(context);
       const usernames = await getResultUsernames(context);
       if(usernames.length === 0) {
@@ -528,8 +552,8 @@ export const clearCacheForm = Devvit.createForm(
         context.ui.showToast({text: '❎ Failed to Clear Result Data'});
       }
     }
-    else if(!hasAllPerms) {
-      context.ui.showToast('You need \'all\' perms to clear all result data');
+    else if(!canDelete) {
+      context.ui.showToast('You need access to clear all result data');
     }
     else {
       context.ui.showToast({text: 'Confirmation not selected, so no data cleared'});
@@ -717,6 +741,18 @@ function getOverrideOptions(
 	}
 
 	return options;
+}
+
+async function canDeleteAllCache(context:Context, appSettings: AppSettings): Promise<boolean> {
+  const deleteAllCacheOverrideScope = appSettings.deleteAllCacheOverrideScope;
+  if(!deleteAllCacheOverrideScope || deleteAllCacheOverrideScope === 'none') {
+    return false;
+  }
+
+  if(deleteAllCacheOverrideScope === 'full-mod') {
+    return checkForModPerms(context, ['all']);
+  }
+  return false;
 }
 
 async function isBanned(context: Context | TriggerContext, username?: string, subredditName?: string): Promise<boolean> {

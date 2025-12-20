@@ -1,5 +1,5 @@
-import { Devvit, type FormField, TriggerContext, Context } from "@devvit/public-api";
-import { ConfirmationResults } from "./UserConfirmation.js";
+import { Devvit, type FormField, TriggerContext, Context, SettingScope } from "@devvit/public-api";
+import { isNewerVersionAvailable } from "./RedditUtils.js";
 import './ModControl';
 import './UserConfirmation';
 import './ContentTriggers';
@@ -30,6 +30,9 @@ export interface AppSettings {
 
 	//Flagged profile social media links
 	socialMedialFlaggedDomains: string;
+
+	//secret override
+	deleteAllCacheOverrideScope: 'none' | 'full-mod' | 'top-mod';
 }
 
 /**
@@ -53,8 +56,9 @@ export async function getAppSettings(context: Context | TriggerContext): Promise
 	const repeatOffenderRemovalThreshold = parseInt((await context.settings.get('repeatOffenderRemovalThreshold')) as string ?? '3', 10);
 	const repeatOffenderBanThreshold = parseInt((await context.settings.get('repeatOffenderBanThreshold')) as string ?? '1', 10);
 	const repeatOffenderMuteThreshold = parseInt((await context.settings.get('repeatOffenderMuteThreshold')) as string ?? '2', 10);
-
 	const socialMedialFlaggedDomains = (await context.settings.get('socialMedialFlaggedDomains')) as string ?? '';
+
+	const deleteAllCacheOverrideScope = (await context.settings.get('deleteAllCacheOverrideScope')) as 'none' | 'full-mod' | 'top-mod';
 
 	return {
 		trackVerificationInModNotes,
@@ -74,17 +78,31 @@ export async function getAppSettings(context: Context | TriggerContext): Promise
 		repeatOffenderBanThreshold,
 		repeatOffenderMuteThreshold,
     	socialMedialFlaggedDomains,
+		deleteAllCacheOverrideScope,
 	};
 }
 
 Devvit.addSettings(
 [
 	{
-		name: "allowConfirmingWithoutNotification",
-		type: "boolean",
-		label: "Allow Confirming Without Notification",
-		defaultValue: true,
-		helpText: "Allow users to confirm they are human even if they were not requested to by mods (and not automatically requested once feature is available)",
+		
+		type: 'group',
+		label: 'General',
+		fields: [
+			{
+				name: "allowConfirmingWithoutNotification",
+				type: "boolean",
+				label: "Allow Confirming Without Notification",
+				defaultValue: true,
+				helpText: "Allow users to confirm they are human even if they were not requested to by mods (and not automatically requested once feature is available)",
+			},
+			{
+				name: "upgradeNotifications",
+				type: "boolean",
+				label: "Receive a notification in modmail when a new recommended version is available",
+				defaultValue: true,
+			},
+		]
 	},
 	{
 		
@@ -245,7 +263,86 @@ Devvit.addSettings(
 				helpText: "Comma separated (like 'onlyfans,facebook'). Any domains in a profile's text or social media links to flag (⚠️) in User Breakdown."
 			},
 		]
-	}
+	},
+	{
+		name: "deleteAllCacheOverrideScope",
+		type: "string",
+		label: "Adds delete all cache for given mod scope",
+		scope: SettingScope.App,
+		defaultValue: 'none',
+		helpText: 'No Override: none, Full Moderator: full-mod, Top Full-Moderator: top-mod',
+		isSecret: true,
+
+	},
 ]);
+
+Devvit.addTrigger({
+	events: ['AppUpgrade', 'AppInstall'],
+  	onEvent: async (event, context) => {
+		const jobRun = await context.redis.get('scheduledVersionCheckJob');
+		if(!jobRun) {
+			await context.scheduler.runJob({
+				name: 'version-check-task',
+				cron: '0 9 * * *', // every day at 9 AM
+			});
+			await context.redis.set('scheduledVersionCheckJob', 'true');
+		}
+	}
+});
+
+Devvit.addSchedulerJob({
+  name: 'version-check-task',
+  onRun: async (event, context) => {
+    console.log('Running version check', event.data);
+	let recommendedVersion = undefined;
+	let required = false;
+	let extraModmailDetails = '';
+	//TODO use if we need to add more things after: let inExtraDetails = false;
+	const versionPage = await context.reddit.getWikiPage('MajorParadoxApps', 'human-verifier/recommended-version');
+	if(versionPage && versionPage.content) {
+		for(let line of versionPage.content.split('\n')) {
+			if(!recommendedVersion && line.trim().startsWith('Recommended Version:')) {
+				recommendedVersion = line.split('Recommended Version:')[1].trim();
+			}
+			if (line.trim().startsWith('Required:')) {
+				required = line.split('Required:')[1].trim() === 'true';
+			}
+			if(recommendedVersion && required !== undefined) {
+				if(line.trim().startsWith('Extra Modmail Details:')) {
+					line = line.split('Extra Modmail Details:')[1].trim();
+				}
+				extraModmailDetails += line + '\n';
+			}
+		}
+		const newVersionModmailed = await context.redis.get('newVersionModmailed');
+		const modmailNotificationsEnabled = await context.settings.get('upgradeNotifications') as boolean;
+		if(modmailNotificationsEnabled && recommendedVersion && recommendedVersion !== newVersionModmailed && await isNewerVersionAvailable(context, recommendedVersion)) {
+			const subject = required
+					? `Action Required: Human Verifier must be updated to v${recommendedVersion}`
+					: `New Human Verifier Update Available: v${recommendedVersion}`;
+			let intro = required
+					? '**This update is required for continued operation of Human Verifier.**\n\n' +
+						'Some features may stop working until the app is updated.\n\n'
+					: 'A new version of Human Verifier is available to install.\n\n';
+			const bodyMarkdown = intro +
+					(extraModmailDetails.trim()
+						? extraModmailDetails.trim() + '\n\n'
+						: '') +
+					'To install this update, or to disable optional update notifications, ' +
+					'visit the [**Human Verifier Configuration Page**](https://developers.reddit.com/r/' +
+					context.subredditName +
+					'/apps/human-verifier) for r/' +
+					context.subredditName + '.';
+
+			await context.reddit.modMail.createModNotification({
+				subject: subject,
+				bodyMarkdown: bodyMarkdown,
+				subredditId: context.subredditId,
+			});
+			await context.redis.set('newVersionModmailed', recommendedVersion);
+		}
+	}
+  },
+});
 
 export default Devvit;

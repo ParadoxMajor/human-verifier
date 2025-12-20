@@ -172,8 +172,7 @@ async function handlePostOrComment(isPost: boolean, contentId: string, context: 
             const baseOptions: any = {
               subreddit: subredditName,
               user: confirmationResults.username,
-              note: 'u/' + username + ' timed out to confirm human verification (User Banned)',
-              modnoteLabel: 'BOT_BAN' as UserNoteLabel
+              note: 'Timed out to confirm human verification',
             };
             const redditId = postId ?? commentId;
             if (redditId) {
