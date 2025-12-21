@@ -2,6 +2,7 @@ import { Devvit , TriggerContext, Context, UserNoteLabel, FormField } from "@dev
 import { ConfirmationResults, getConfirmationResults, setConfirmationResults, deleteConfirmationResults, parseConfirmationResultsWithDates, getResultUsernames, clearAllResults } from "./UserConfirmation.js";
 import { AppSettings, getAppSettings } from "./main.js";
 import { checkForModPerms, getAuthorBreakdown, getModPerms } from "./RedditUtils.js"; 
+import { formatDistanceToNow } from "date-fns";
 
 export const verifyForm = Devvit.createForm(
   (data) => {
@@ -66,6 +67,7 @@ export const verifyForm = Devvit.createForm(
         context.ui.showToast({text: 'u/' + username + ' was not notified of request'});
     }
     confirmationResults.verificationStatus = 'pending';
+    if(confirmationResults.modOverridenStatus) confirmationResults.modOverridenStatus = false;
     await setConfirmationResults(context, username, confirmationResults);
     context.ui.showToast({text: 'u/' + username + ' notified to confirm human', appearance: 'success'});
   }
@@ -276,15 +278,17 @@ Devvit.addMenuItem({
     if(fullUsernameCount > 100) {
       usernames = usernames.slice(-100);
     }
+    usernames = usernames.reverse();
     let usernameOptions = new Array<{label:string, value:string}>;
     for(const username of usernames) {
       usernameOptions.push({label: username, value: username});
     }
-    let verificationBreakdown = (usernameOptions.length === fullUsernameCount ? 'All ' + fullUsernameCount : usernameOptions.length + ' Most Recent') + ' Results\n\n';
+    let verificationBreakdown = (usernameOptions.length === fullUsernameCount ? 'All ' + fullUsernameCount : 
+                                  usernameOptions.length + ' Most Recent') + ' Result' + (usernameOptions.length !== 1 ? 's' : '') + '\n\n';
     for(const usernameOption of usernameOptions) {
       const username = usernameOption.value;
       const confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
-      let timelapse = undefined;
+      let timelapse = '';
       if(confirmationResults.verificationStatus === 'verified') {
         verificationBreakdown += '✅ ';
       }
@@ -296,12 +300,13 @@ Devvit.addMenuItem({
       }
       else if(confirmationResults.verificationStatus === 'pending') {
         verificationBreakdown += '💬 ';
-        timelapse = confirmationResults.timeLapseSeconds;
+        timelapse = confirmationResults.notified && confirmationResults.timeNotified ? 
+                        ' - ' + formatDistanceToNow((new Date(), confirmationResults.timeNotified)) : '';
       }
       else if(confirmationResults.verificationStatus === 'unverified') {
         verificationBreakdown += '⚪️ ';
       }
-      verificationBreakdown += 'u/' + username + ' (' + confirmationResults.verificationStatus + (timelapse ? ' - ' + timelapse + 's' : '') + ')' + '\n';
+      verificationBreakdown += 'u/' + username + ' (' + confirmationResults.verificationStatus + timelapse + ')' + '\n';
     }
     verificationBreakdown = verificationBreakdown.trim();
     if(usernameOptions.length === 0) {
@@ -460,6 +465,12 @@ export const modOverrideForm = Devvit.createForm(
         if(values.verifyOverride[0] === 'mark_unverified') {
             confirmationResults.verificationStatus = 'unverified';
             confirmationResults.modOverridenStatus = true;
+            confirmationResults.notified = false;
+            confirmationResults.timeNotified = undefined;
+            confirmationResults.timeStarted = undefined;
+            confirmationResults.timeLapseSeconds = undefined;
+            confirmationResults.timeToOpenInSeconds = undefined;
+            confirmationResults.timeCompleted = undefined;
             await setConfirmationResults(context, username, confirmationResults);
             //TODO notify with notifyOfOverride?
             const outcome = 'Overriden To Unverified';
@@ -580,6 +591,7 @@ function getVerificationDetails(
   const removeTimeout = appSettings.actionOnTimeoutVerification === 'remove';
   const reportTimeout = appSettings.actionOnTimeoutVerification === 'report';
   const banOnFail = appSettings.banOnFailedVerification;
+  const banOnTimeout = appSettings.banOnConfirmationTimeout;
 
   let detailedStatus = '';
   let buttonLabel = '';
@@ -607,8 +619,8 @@ function getVerificationDetails(
 
   // ---- Current Enforcement (emoji flags) ----
   const currentEnforcement: string[] = [];
-  const isRemovingNow = !banned && ((pending && removePending) || (timeout && removeTimeout) || (failed && (removePending || removeTimeout)));
-  const isReportingNow = !banned && ((pending && reportPending) || (timeout && reportTimeout) || (failed && (reportPending || reportTimeout)));
+  const isRemovingNow = !banned && ((pending && removePending) || (timeout && removeTimeout) || failed);
+  const isReportingNow = !banned && ((pending && reportPending) || (timeout && reportTimeout) || failed);
 
   if (banned) currentEnforcement.push('⛔️ User is banned from posting');
   else {
@@ -634,22 +646,20 @@ function getVerificationDetails(
 
     // Remove content bullets
     if (!banned && (removePending || removeTimeout)) {
-      removeBullets.push('Until verification is complete');
       if (timeout && removeTimeout) removeBullets.push('If verification times out');
       if (failed && (removePending || removeTimeout)) removeBullets.push('If verification fails');
     }
 
     // Report content bullets
     if (!banned && (reportPending || reportTimeout)) {
-      reportBullets.push('Until verification is complete');
       if (timeout && reportTimeout) reportBullets.push('If verification times out');
       if (failed && (reportPending || reportTimeout)) reportBullets.push('If verification fails');
     }
 
     // Ban bullets
-    if (banOnFail) {
-      if (banned) banBullets.push('User will stay banned');
-      else if (failed) banBullets.push('If verification fails: User will be banned');
+    if (banOnFail || banOnTimeout) {
+      if (failed) banBullets.push('If verification fails');
+      if (banOnTimeout) banBullets.push('If verification times out');
     }
 
     if (removeBullets.length || reportBullets.length || banBullets.length) {
@@ -670,8 +680,13 @@ function getVerificationDetails(
       }
 
       if (banBullets.length) {
-        parts.push('User Will Be Banned:');
-        banBullets.forEach(b => parts.push(`• ${b}`));
+        if(banned) {
+          parts.push('⛔️ User Will Remain Banned Until Unbanned Manually');
+        }
+        else {
+          parts.push('User Will Be Banned:');
+          banBullets.forEach(b => parts.push(`• ${b}`));
+        }
       }
     }
   }

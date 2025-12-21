@@ -579,11 +579,11 @@ export function generateConfirmationResultsBreakdown(confirmationResults:Confirm
   breakdown += '* Token Entered:   ' + (tokenEntered ? tokenEntered : '') + '\n';
   breakdown += '* Told To Leave Blank:   ' + (fakeTokenEntered ? fakeTokenEntered : '') + '\n';
   breakdown += '* Confirmed Understanding:   ' + understand + '\n';
-  breakdown += timeLapseSeconds ? '* Time Taken On Form: ' + timeLapseSeconds + 's' + (minConfirm > 0 ? ' (' + minConfirm + 's min)' : '') + '\n' : '';
+  breakdown += timeLapseSeconds ? '* Time Taken On Form: ' + timeLapseSeconds + 's' + (minConfirm > 0 ? ' (' + minConfirm + 's min)' : '\n') + '\n' : '';
   breakdown += modOverridenStatus ? '* Mod Overriden: ' + modOverridenStatus + '\n' : '';
 
   breakdown += screenReader && !human ? '\n\*Screen reader used, so skipped checks with poor accessibility. If user has useful feedback for the form, please send modmail to r/MajorParadoxApps*\n\n' : '';
-  breakdown += tokenDisplayed?.toLowerCase() !== tokenEntered?.toLowerCase() ? '\n\*Token wasn\'t was considered a mismatch in case of dyslexia*\n\n' : '';
+  breakdown += verificationStatus === 'verified' && tokenDisplayed?.toLowerCase() !== tokenEntered?.toLowerCase() ? '\n\*Token wasn\'t was considered a mismatch in case of dyslexia*\n\n' : '';
   breakdown += verificationStatus === 'verified' ? '\n*Note: Passing verification does not guarantee they are human. They could be a very smart bot!*\n\n'
                                     : '*Failing verification does not guarantee they are a bot. They could have had trouble or messed up*\n\n';
   breakdown += modFailedOverride ? '*User failed but is a mod, so counted as a success*\n\n' : '';
