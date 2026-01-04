@@ -1,5 +1,5 @@
 
-import { Devvit, type FormField, Post, Comment, RedditAPIClient, SettingScope, SubredditData, SubredditInfo, ModeratorPermission, User, ModNote, JobContext } from "@devvit/public-api";
+import { Devvit, type FormField, Post, Comment, RedditAPIClient, SettingScope, SubredditData, SubredditInfo, ModeratorPermission, User, ModNote, JobContext, TriggerContext } from "@devvit/public-api";
 import { getAppSettings } from "./main.js";
 import { differenceInDays, differenceInHours, Duration, formatDistanceToNow, formatDuration, intervalToDuration } from "date-fns";
 
@@ -98,7 +98,7 @@ export function formatRedditUrl(context: Devvit.Context, url: string): string {
 /**
  * Check mod permissions
  */
-export async function getModPerms(context: Devvit.Context, username?: string) : Promise<ModeratorPermission[]> {
+export async function getModPerms(context: Devvit.Context | TriggerContext, username?: string) : Promise<ModeratorPermission[]> {
     const subredditName = await context.reddit.getCurrentSubredditName() || '';
     username = username ? username : await context.reddit.getCurrentUsername() || '';
     const listing = context.reddit.getModerators({ subredditName });
@@ -108,8 +108,8 @@ export async function getModPerms(context: Devvit.Context, username?: string) : 
     return perms;
 }
 
-export async function checkForModPerms(context: Devvit.Context, requiredPerms : ModeratorPermission[]) : Promise<boolean> {
-    const perms = await getModPerms(context);
+export async function checkForModPerms(context: Devvit.Context | TriggerContext, requiredPerms : ModeratorPermission[], username?: string) : Promise<boolean> {
+    const perms = await getModPerms(context, username);
     // If the user has "all", they automatically pass.
     if (perms.includes('all')) return true;
 

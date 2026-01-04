@@ -1,7 +1,8 @@
 {
   "name": "human-verifier",
     "blocks": {
-      "entry": "src/main.ts"
+      "entry": "src/main.ts",
+      "triggers": ["onPostCreate", "onCommentCreate", "onModMail"]
   },
   "marketingAssets": {
     "icon": "assets/human-icon.png"

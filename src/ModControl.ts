@@ -1,7 +1,7 @@
 import { Devvit , TriggerContext, Context, UserNoteLabel, FormField } from "@devvit/public-api";
 import { ConfirmationResults, getConfirmationResults, setConfirmationResults, deleteConfirmationResults, parseConfirmationResultsWithDates, getResultUsernames, clearAllResults } from "./UserConfirmation.js";
 import { AppSettings, getAppSettings } from "./main.js";
-import { checkForModPerms, getAuthorBreakdown, getModPerms } from "./RedditUtils.js"; 
+import { checkForModPerms, getAuthorBreakdown, getModPerms, getRedditPlatformGroup } from "./RedditUtils.js"; 
 import { formatDistanceToNow } from "date-fns";
 
 export const verifyForm = Devvit.createForm(
@@ -10,6 +10,9 @@ export const verifyForm = Devvit.createForm(
     let appSettings = JSON.parse(data.appSettings);
     const statusDetails = getVerificationDetails(appSettings, confirmationResults.username || '', confirmationResults.verificationStatus || 'unverified', data.banned);
     let description = statusDetails.description.trim();
+    description += confirmationResults.failureReportPlain
+      ? '\n\n---------------------------\n\n' + confirmationResults.failureReportPlain + '\n\n'
+      : '';
     let descriptionLineHeight = description.split('\n').length;
     if(descriptionLineHeight > 15) descriptionLineHeight = 15;
     return {
@@ -45,6 +48,9 @@ export const verifyForm = Devvit.createForm(
     
     let username = context.postId ? (await context.reddit.getPostById(context.postId || '')).authorName
                                   : (await context.reddit.getCommentById(context.commentId || '')).authorName;
+    if(!username) {
+      username = values.authorBreakdown.match(/u\/([A-Za-z0-9_-]+)/)?.[1] ?? null;
+    }
     let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
     const appSettings = await getAppSettings(context);
     
@@ -73,7 +79,7 @@ export const verifyForm = Devvit.createForm(
   }
 );
 
-async function sendVerificationRequest(
+export async function sendVerificationRequest(
 	context: Context | TriggerContext,
 	username: string,
 	confirmationResults: ConfirmationResults
@@ -205,7 +211,7 @@ Devvit.addMenuItem({
   location: "post",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
+    console.log(`\nMenu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
 
     const post = await context.reddit.getPostById(event.targetId || '');
     if(!post) {
@@ -239,7 +245,7 @@ Devvit.addMenuItem({
   location: "comment",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
+    console.log(`\nMenu item 'Check Human Status' pressed by u/${context.username}:\n${JSON.stringify(event)}`);
     const comment = await context.reddit.getCommentById(event.targetId || '');
     if(!comment) {
       console.log('Comment not found for verification.');
@@ -272,83 +278,134 @@ Devvit.addMenuItem({
   location: "subreddit",
   forUserType: "moderator",
   onPress: async (event, context) => {
-    console.log(`Menu item 'Check Verification Statuses' pressed by u${context.username}:\n${JSON.stringify(event)}`);
-    let usernames = await getResultUsernames(context);
-    const fullUsernameCount = usernames.length as number;
-    if(fullUsernameCount > 100) {
-      usernames = usernames.slice(-100);
-    }
-    usernames = usernames.reverse();
-    let usernameOptions = new Array<{label:string, value:string}>;
-    for(const username of usernames) {
-      usernameOptions.push({label: username, value: username});
-    }
-    let verificationBreakdown = (usernameOptions.length === fullUsernameCount ? 'All ' + fullUsernameCount : 
-                                  usernameOptions.length + ' Most Recent') + ' Result' + (usernameOptions.length !== 1 ? 's' : '') + '\n\n';
-    for(const usernameOption of usernameOptions) {
-      const username = usernameOption.value;
-      const confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
-      let timelapse = '';
-      if(confirmationResults.verificationStatus === 'verified') {
-        verificationBreakdown += '✅ ';
-      }
-      else if(confirmationResults.verificationStatus === 'failed') {
-        verificationBreakdown += '❌ ';
-      }
-      else if(confirmationResults.verificationStatus === 'timeout') {
-        verificationBreakdown += '💤 ';
-      }
-      else if(confirmationResults.verificationStatus === 'pending') {
-        verificationBreakdown += '💬 ';
-        timelapse = confirmationResults.notified && confirmationResults.timeNotified ? 
-                        ' - ' + formatDistanceToNow((new Date(), confirmationResults.timeNotified)) : '';
-      }
-      else if(confirmationResults.verificationStatus === 'unverified') {
-        verificationBreakdown += '⚪️ ';
-      }
-      verificationBreakdown += 'u/' + username + ' (' + confirmationResults.verificationStatus + timelapse + ')' + '\n';
-    }
-    verificationBreakdown = verificationBreakdown.trim();
-    if(usernameOptions.length === 0) {
-      verificationBreakdown = 'No Results Yet'
-    }
-
-    const showDeleteAllToggle = await canDeleteAllCache(context, await getAppSettings(context));
-
-    const canOverride = await checkForModPerms(context, ['posts', 'access']);
-    context.ui.showForm(verifyAllForm, {fullUsernameCount, verificationBreakdown, usernameOptions: JSON.stringify(usernameOptions), showDeleteAllToggle, canOverride});
+    console.log(`\nMenu item 'Check Verification Statuses' pressed by u${context.username}:\n${JSON.stringify(event)}`);
+    await prepareCheckVerificationStatusesForm(context);
   },
 });
+
+async function prepareCheckVerificationStatusesForm(context:Context, usernameFilter?: string) {
+  console.log('Preparing `Check Verification Statuses` form' + (usernameFilter ? ' (Filter: \'' + usernameFilter + '\')' : ''));
+
+  let usernames = await getResultUsernames(context);
+  let fullUsernameCount = usernames.length as number;
+  if(usernameFilter) {
+    usernames = usernames.filter(element => element.toLowerCase().includes(usernameFilter.toLowerCase()));
+  }
+  const fullPreFilteredCount = fullUsernameCount;
+  fullUsernameCount = usernames.length as number;
+
+  if(fullPreFilteredCount === 0) {
+    console.log('No results yet, so showing toast instead');
+    context.ui.showToast('No Results Yet');
+    return;
+  }
+
+  if(fullUsernameCount > 100) {
+    usernames = usernames.slice(-100);
+  }
+  usernames = usernames.reverse();
+
+  let verificationBreakdown = fullUsernameCount === fullPreFilteredCount && fullUsernameCount === usernames.length ? 
+                            fullUsernameCount + ' Results' : 
+                            (fullUsernameCount === fullPreFilteredCount && fullUsernameCount > usernames.length ?
+                              usernames.length + ' Results (100 Most Recent)' :
+                              (fullUsernameCount < fullPreFilteredCount && fullUsernameCount === usernames.length ? 
+                                fullUsernameCount + ' Filtered Results' : fullUsernameCount + ' Filtered Results (100 Most Recent)')
+                            );
+
+  let usernameOptions = new Array<{label:string, value:string}>;
+  for(const username of usernames) {
+    let usernameLabel = '';
+    const confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
+    const verificationStatus = confirmationResults.verificationStatus;
+    let timelapse = '';
+    if(verificationStatus === 'verified') {
+      usernameLabel = '✅ u/' + username + ' (' + verificationStatus + ')';
+    }
+    else if(verificationStatus === 'failed') {
+      usernameLabel = '❌ u/' + username + ' (' + verificationStatus + ')';
+    }
+    else if(verificationStatus === 'timeout') {
+      usernameLabel = '💤 u/' + username + ' (' + verificationStatus + ')';
+    }
+    else if(verificationStatus === 'pending') {
+      timelapse = confirmationResults.notified && confirmationResults.timeNotified ? 
+                      ' - ' + formatDistanceToNow(new Date(confirmationResults.timeNotified)) : '';
+      usernameLabel = '💬 u/' + username + ' (' + verificationStatus + timelapse + ')';
+    }
+    else if(verificationStatus === 'unverified') {
+      usernameLabel = '⚪️ u/' + username + ' (' + verificationStatus + ')';
+    }
+    usernameOptions.push({label: usernameLabel, value: username});
+  }
+
+  const showDeleteAllToggle = await canDeleteAllCache(context, await getAppSettings(context));
+  let canViewModmail = await checkForModPerms(context, ['mail']);
+  //TODO if Reddit allows loading modmails via links on the app, remove this check:
+  if(canViewModmail && getRedditPlatformGroup(context) === 'app') {
+    canViewModmail = false;
+  }
+  const canOverride = await checkForModPerms(context, ['posts', 'access']);
+
+  console.log('Showing Check Verification Statuses form...');
+  context.ui.showForm(verifyAllForm, {fullUsernameCount, verificationBreakdown, usernameOptions: JSON.stringify(usernameOptions), usernameFilter: usernameFilter ? usernameFilter : '', showDeleteAllToggle, canViewModmail, canOverride});
+}
 
 export const verifyAllForm = Devvit.createForm(
   (data) => {
     const usernameOptions = JSON.parse(data.usernameOptions);
-    const countLabel = data.fullUsernameCount === usernameOptions.length ? 'Select from ' + data.fullUsernameCount + ' statuses': 
-                      'Select from the ' + usernameOptions.length + ' most recent statuses or type a username';
+    //const countLabel = data.fullUsernameCount === usernameOptions.length ? 'Select from ' + data.fullUsernameCount + ' statuses': 
+                      //'Select from the ' + usernameOptions.length + ' most recent statuses or type a username';
+    let actionOptions = [{label: 'View Details', value: 'viewDetails'}];
+    if(data.canViewModmail) actionOptions.push({label: 'View Modmail Notification', value: 'viewModmail'});
+    if(data.canOverride) actionOptions.push({label: 'Override Status', value: 'override'});
     let fields = [] as FormField[];
     fields.push(
       {
           name: "verificationBreakdown",
           label: "Verification Breakdown",
-          type: "paragraph",
+          type: "string",
           defaultValue: data.verificationBreakdown,
-          lineHeight: 6,
           disabled: true,
       }
     );
-    if(data.canOverride) {
-      fields.push(
-        {
-            name: "usernameSelect",
-            label: "Select Username",
-            type: "select",
-            options: usernameOptions,
-            helpText: 'Select or type a username and press \'Override\' to manually set a status',
-            defaultValue: [],
-            disabled: false,
-        }
-      );
-    }
+    fields.push(
+      {
+          label: "Username",
+          type: "group",
+          fields: [
+            {
+                name: "usernameFilter",
+                label: "Filter Username",
+                type: "string",
+                helpText: 'To filter \'Select Username\', enter text and press \'Go\'',
+                defaultValue: data.usernameFilter ? data.usernameFilter : '',
+                disabled: false,
+            },
+            {
+                name: "usernameSelect",
+                label: "Select Username",
+                type: "select",
+                options: usernameOptions,
+                helpText: 'Select username for action',
+                defaultValue: [],
+                disabled: false,
+            }
+          ]
+      }
+    );
+    fields.push(
+      {
+          name: "actionSelect",
+          label: "Select Action",
+          type: "select",
+          options: actionOptions,
+          helpText: 'Select an action and press \'Go\'',
+          defaultValue: ['viewDetails'],
+          disabled: false,
+          required: true,
+      }
+    );
     if(data.showDeleteAllToggle) {
       fields.push(
         {
@@ -363,13 +420,16 @@ export const verifyAllForm = Devvit.createForm(
     return {
       fields: fields,
       title: 'Check Verification Statuses',
-      acceptLabel: data.canOverride || data.hasAllPerms ? 'Override' : 'Close',
+      acceptLabel: 'Go',
       cancelLabel: 'Close',
     }
   },
   async ({ values }, context) => {
     const username =  values.usernameSelect?.length > 0 ? values.usernameSelect[0] : undefined;
-    if(username && !await checkForModPerms(context, ['posts', 'access'])) {
+    const usernameFilter = values.usernameFilter?.trim();
+    const action = values.actionSelect[0] as 'viewDetails' | 'viewModmail' | 'override';
+
+    if(action === 'override' && username && !await checkForModPerms(context, ['posts', 'access'])) {
       console.log('u/' + context.username + ' has unsufficent mod perms to override user status');
       context.ui.showToast('❌ You need posts and access perms to override user status');
       return;
@@ -379,31 +439,66 @@ export const verifyAllForm = Devvit.createForm(
       context.ui.showToast('❌ You need all perms to delete all data');
       return;
     }
-    if(!username && !values.deleteAllResultData) {
-      console.log('Neither username nor delete all was selected');
-      context.ui.showToast('❌ No username or other override option selected');
-      return;
-    }
 
     //if delete all override selected
     if(values.deleteAllResultData) {
+      console.log('\'Check Verification Statuses\' u/'+ context.username + ' preparing to delete all cache');
       const usernames = await getResultUsernames(context);
       context.ui.showForm(clearCacheForm, {resultCount: usernames.length});
       return;
     }
-    //otherwise overriding a selected or typed username
-    let confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
-    if(!confirmationResults) {  
-      confirmationResults = {
-        username: username,
-      };
-      await setConfirmationResults(context, username, confirmationResults);
+
+    console.log('\'Check Verification Statuses\' u/'+ context.username + ' preparing to ' + action + ' for user ' + username);
+
+    let confirmationResults = undefined;
+    if(username) {
+      confirmationResults = await getConfirmationResults(context, username) as ConfirmationResults;
     }
-    let authorBreakdown = await getAuthorBreakdown(context, username);
-    //remove username from breakdown, since it's already shown
-    //actually, need it so the overrides know the username
-    //authorBreakdown = authorBreakdown.replace(/^[^|]+\s\|\s/, '');
-    context.ui.showForm(modOverrideForm, {appSettings: JSON.stringify(await getAppSettings(context)), confirmationResults: JSON.stringify(confirmationResults), authorBreakdown: authorBreakdown, banned: await isBanned(context, username)});
+    if(!confirmationResults) {
+      console.log('No result found, so filtering on entered text \'' + (usernameFilter ? usernameFilter : '') + '\'');
+      //if not result found, try filtering
+      await prepareCheckVerificationStatusesForm(context, usernameFilter);
+      return;
+    }
+    if(action === 'viewDetails') {
+      console.log('Starting next step of ' + action + ' for ' + username);
+      let authorBreakdown = await getAuthorBreakdown(context, username);
+      //remove username from breakdown, since it's already shown
+      authorBreakdown = authorBreakdown.replace(/^[^|]+\s\|\s/, '');
+      context.ui.showForm(verifyForm, {appSettings: JSON.stringify(await getAppSettings(context)), 
+                                      confirmationResults: JSON.stringify(confirmationResults), 
+                                      authorBreakdown: authorBreakdown, 
+                                      banned: await isBanned(context, username)});
+    }
+
+    else if(action === 'viewModmail') {
+      console.log('Starting next step of ' + action + ' for ' + username);
+      if(confirmationResults?.notificationModmailId) {
+        const modmailURL = 'https://mod.reddit.com/mail/all/' + confirmationResults.notificationModmailId;
+        console.log('Is this the correct modmail URL? - ' + modmailURL);
+        context.ui.navigateTo(modmailURL);
+      }
+      else {
+        console.log('u/' + username + ' doesn\'t have a notification modmail to view');
+        context.ui.showToast('u/' + username + ' doesn\'t have a notification modmail to view');
+      }
+    }
+
+    else if(action === 'override') {
+      console.log('Starting next step of ' + action + ' for ' + username);
+      //otherwise overriding a selected or typed username
+      if(!confirmationResults) {  
+        confirmationResults = {
+          username: username,
+        };
+        await setConfirmationResults(context, username, confirmationResults);
+      }
+      let authorBreakdown = await getAuthorBreakdown(context, username);
+      context.ui.showForm(modOverrideForm, {appSettings: JSON.stringify(await getAppSettings(context)), 
+                                            confirmationResults: JSON.stringify(confirmationResults), 
+                                            authorBreakdown: authorBreakdown, 
+                                            banned: await isBanned(context, username)});
+    }
   }
 );
 
@@ -620,7 +715,7 @@ function getVerificationDetails(
   // ---- Current Enforcement (emoji flags) ----
   const currentEnforcement: string[] = [];
   const isRemovingNow = !banned && ((pending && removePending) || (timeout && removeTimeout) || failed);
-  const isReportingNow = !banned && ((pending && reportPending) || (timeout && reportTimeout) || failed);
+  const isReportingNow = !isRemovingNow && !banned && ((pending && reportPending) || (timeout && reportTimeout));
 
   if (banned) currentEnforcement.push('⛔️ User is banned from posting');
   else {
@@ -639,55 +734,41 @@ function getVerificationDetails(
   parts.push(`Press "${buttonLabel}" to ${buttonLabel.includes('Reminder') ? 'send a reminder' : 'send a new request'}.`);
 
   // ---- Consequences ----
-  if (!pending) {
-    const removeBullets: string[] = [];
-    const reportBullets: string[] = [];
-    const banBullets: string[] = [];
+  const removeBullets: string[] = [];
+  const reportBullets: string[] = [];
+  const banBullets: string[] = [];
 
-    // Remove content bullets
-    if (!banned && (removePending || removeTimeout)) {
-      if (timeout && removeTimeout) removeBullets.push('If verification times out');
-      if (failed && (removePending || removeTimeout)) removeBullets.push('If verification fails');
+  parts.push('');
+  parts.push((pending ? 'If/when user completes' : 'If you proceed') + ' and verification fails:');
+
+  if(banOnFail) {
+    parts.push('• ' + (!banned ? ' User will be banned' : '⛔️ User will remain banned'));
+  }
+  else {
+    if(banned) { 
+      parts.push('• ⛔️ User will remain banned until unbanned manually. If done:');
     }
-
-    // Report content bullets
-    if (!banned && (reportPending || reportTimeout)) {
-      if (timeout && reportTimeout) reportBullets.push('If verification times out');
-      if (failed && (reportPending || reportTimeout)) reportBullets.push('If verification fails');
+    if(removeTimeout) {
+      parts.push((banned ? '\t' : '') + '• ' + (isRemovingNow ? 'Content will continue being auto-removed' : 'Content will be auto-removed'));
     }
+  }
 
-    // Ban bullets
-    if (banOnFail || banOnTimeout) {
-      if (failed) banBullets.push('If verification fails');
-      if (banOnTimeout) banBullets.push('If verification times out');
+  parts.push('');
+
+  parts.push('Or if verification times out:');
+
+  if(banOnTimeout) {
+    parts.push('• ' + (!banned ? ' User will be banned' : '⛔️ User will remain banned'));
+  }
+  else {
+    if(banned) { 
+      parts.push('• ⛔️ User will remain banned until unbanned manually. If done:');
     }
-
-    if (removeBullets.length || reportBullets.length || banBullets.length) {
-      parts.push('');
-      parts.push('If you proceed:');
-      parts.push(''); // extra spacing for readability
-
-      if (removeBullets.length) {
-        const heading = isRemovingNow ? 'Content Will Continue Being Auto-Removed:' : 'Content Will Be Auto-Removed:';
-        parts.push(heading);
-        removeBullets.forEach(b => parts.push(`• ${b}`));
-      }
-
-      if (reportBullets.length) {
-        const heading = isReportingNow ? 'Content Will Continue Being Auto-Reported:' : 'Content Will Be Auto-Reported:';
-        parts.push(heading);
-        reportBullets.forEach(b => parts.push(`• ${b}`));
-      }
-
-      if (banBullets.length) {
-        if(banned) {
-          parts.push('⛔️ User Will Remain Banned Until Unbanned Manually');
-        }
-        else {
-          parts.push('User Will Be Banned:');
-          banBullets.forEach(b => parts.push(`• ${b}`));
-        }
-      }
+    if(removeTimeout) {
+      parts.push((banned ? '\t' : '') + '• ' + (isRemovingNow ? 'Content will continue being auto-removed' : 'Content will be auto-removed'));
+    }
+    else if(reportTimeout) {
+      parts.push((banned ? '\t' : '') + '• ' + (isReportingNow ? 'Content will continue being auto-reported' : 'Content will Be auto-reported'));
     }
   }
 
@@ -770,7 +851,7 @@ async function canDeleteAllCache(context:Context, appSettings: AppSettings): Pro
   return false;
 }
 
-async function isBanned(context: Context | TriggerContext, username?: string, subredditName?: string): Promise<boolean> {
+export async function isBanned(context: Context | TriggerContext, username?: string, subredditName?: string): Promise<boolean> {
     const user = username ?? context.username;
     const subreddit = subredditName ?? context.subredditName;
 
