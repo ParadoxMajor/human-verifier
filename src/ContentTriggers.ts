@@ -6,7 +6,7 @@ import { checkForModPerms, getModPerms } from "./RedditUtils.js";
 
 // Handling a PostSubmit event
 Devvit.addTrigger({
-  event: 'PostSubmit',
+  event: 'PostCreate',
   onEvent: async (event, context) => {
     const username = event.author?.name;
     if(!username) {
@@ -25,7 +25,7 @@ Devvit.addTrigger({
 
 //Handling a CommentSubmit event
 Devvit.addTrigger({
-  event: 'CommentSubmit',
+  event: 'CommentCreate',
   onEvent: async (event, context) => {
     const username = event.author?.name;
     if(!username) {
@@ -203,7 +203,7 @@ async function getOrCreateCustomReasonId(
 
   const newId = await reddit.addSubredditRemovalReason(subredditName, {
     title: 'Custom Reason',
-    message: '',
+    message: '<Enter reason here>',
   });
 
   return newId;
@@ -261,9 +261,18 @@ Devvit.addTrigger({
         else {
           if(subcommand.toLowerCase().trim() === 'request') {
             if(confirmationResults.verificationStatus !== 'pending') {
-              await sendVerificationRequest(context, targetUsername, confirmationResults);
-              //resultMessage = "Sent u/" + targetUsername + ' new verification request';
-              return;
+              if((await getAppSettings(context)).notifyUserOnVerificationRequest) {
+                await sendVerificationRequest(context, targetUsername, confirmationResults);
+                //resultMessage = "Sent u/" + targetUsername + ' new verification request';
+                confirmationResults.verificationStatus = 'pending';
+                if(confirmationResults.modOverridenStatus) confirmationResults.modOverridenStatus = false;
+                await setConfirmationResults(context, targetUsername, confirmationResults);
+                return;
+              }
+              else {
+                console.log('Notifications to users are disabled in app settings (this should never happen). Not sending verification request to u/' + targetUsername);
+                resultMessage = "Verification request sent, but notifications to users are disabled in app settings.";
+              }
             }
             else {
                resultMessage = "u/" + targetUsername + ' is already pending verification';

@@ -563,9 +563,21 @@ export const modOverrideForm = Devvit.createForm(
             confirmationResults.notified = false;
             confirmationResults.timeNotified = undefined;
             confirmationResults.timeStarted = undefined;
-            confirmationResults.timeLapseSeconds = undefined;
             confirmationResults.timeToOpenInSeconds = undefined;
             confirmationResults.timeCompleted = undefined;
+            confirmationResults.timeLapseSeconds = undefined;
+            confirmationResults.tokenDisplayed = undefined
+            confirmationResults.human = undefined;
+            confirmationResults.bot = undefined;
+            confirmationResults.screenReader = undefined;
+            confirmationResults.chatgpt = undefined;
+            confirmationResults.usernameConfirm = undefined;
+            confirmationResults.tokenEntered = undefined;
+            confirmationResults.fakeTokenEntered = undefined;
+            confirmationResults.understand = undefined;
+            confirmationResults.failureReasons = undefined;
+            confirmationResults.failureReportPlain = undefined;
+            confirmationResults.failureReportMarkdown = undefined;
             await setConfirmationResults(context, username, confirmationResults);
             //TODO notify with notifyOfOverride?
             const outcome = 'Overriden To Unverified';
