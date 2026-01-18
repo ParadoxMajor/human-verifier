@@ -279,6 +279,8 @@ Devvit.addSettings(
 Devvit.addTrigger({
 	events: ['AppUpgrade', 'AppInstall'],
   	onEvent: async (event, context) => {
+		console.log('App upgraded or installed, scheduling version check job if not already scheduled');
+		await context.redis.del('newVersionModmailed');
 		const jobRun = await context.redis.get('scheduledVersionCheckJob');
 		if(!jobRun) {
 			await context.scheduler.runJob({
